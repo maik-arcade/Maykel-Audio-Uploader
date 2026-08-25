@@ -107,3 +107,46 @@ export interface SystemStatus {
   serverTime: string;
   version: string;
 }
+
+export interface RobloxAuthUser {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string;
+  isVerified?: boolean;
+}
+
+export interface RobloxGroupConfig {
+  groupId: string;
+  groupName: string;
+  groupUrl: string;
+  groupIconUrl?: string;
+  memberCount?: number;
+  description?: string;
+}
+
+export interface RobloxGroupRole {
+  id: number;
+  name: string;
+  rank: number;
+}
+
+export interface RobloxAuthSession {
+  user: RobloxAuthUser;
+  isGroupMember: boolean;
+  groupRole?: RobloxGroupRole | null;
+  groupConfig: RobloxGroupConfig;
+  token: string;
+  authenticatedAt: number;
+}
+
+export interface RobloxAuthResponse {
+  success: boolean;
+  user?: RobloxAuthUser;
+  isGroupMember?: boolean;
+  groupRole?: RobloxGroupRole | null;
+  groupConfig?: RobloxGroupConfig;
+  token?: string;
+  error?: string;
+  code?: string;
+}

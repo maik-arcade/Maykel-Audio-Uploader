@@ -9,6 +9,8 @@ import { ResultCard } from './components/ResultCard';
 import { HistoryTable } from './components/HistoryTable';
 import { AudioPreviewModal } from './components/AudioPreviewModal';
 import { HelpModal } from './components/HelpModal';
+import { GroupConfigModal } from './components/GroupConfigModal';
+import { RobloxAuthGate } from './components/RobloxAuthGate';
 import { ToastContainer, ToastMessage } from './components/Toast';
 import {
   CreatorType,
@@ -17,6 +19,9 @@ import {
   UploadHistoryItem,
   UploadSettings,
   RobloxProfile,
+  RobloxAuthUser,
+  RobloxGroupConfig,
+  RobloxGroupRole,
 } from './types';
 import {
   fetchHistory,
@@ -26,6 +31,8 @@ import {
   subscribeToJobEvents,
   requestAudioPreview,
   verifyRobloxAccount,
+  fetchAuthSession,
+  robloxLogout,
 } from './services/api';
 
 const STORAGE_KEYS = {
@@ -35,8 +42,22 @@ const STORAGE_KEYS = {
   PROFILE: 'maykel_roblox_profile',
 };
 
+const DEFAULT_GROUP_CONFIG: RobloxGroupConfig = {
+  groupId: '35083161',
+  groupName: 'MAYKEL Official Community',
+  groupUrl: 'https://www.roblox.com/groups/35083161',
+};
+
 export default function App() {
-  // 1. Roblox account state
+  // 0. Mandatory Roblox Authentication & Group Gate State
+  const [authUser, setAuthUser] = useState<RobloxAuthUser | null>(null);
+  const [isGroupMember, setIsGroupMember] = useState<boolean>(false);
+  const [groupRole, setGroupRole] = useState<RobloxGroupRole | null>(null);
+  const [groupConfig, setGroupConfig] = useState<RobloxGroupConfig>(DEFAULT_GROUP_CONFIG);
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
+  const [isGroupModalOpen, setIsGroupModalOpen] = useState<boolean>(false);
+
+  // 1. Roblox Open Cloud account state (for API key upload)
   const [creatorType, setCreatorType] = useState<CreatorType>(() => {
     return (localStorage.getItem(STORAGE_KEYS.CREATOR_TYPE) as CreatorType) || 'User';
   });
@@ -105,16 +126,49 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  // Load initial system status and history
+  // Initial Auth & Session Verification
   useEffect(() => {
-    fetchSystemStatus()
-      .then(setSystemStatus)
-      .catch((err) => console.error('Status check failed:', err));
+    async function initAuth() {
+      setIsAuthLoading(true);
+      try {
+        const session = await fetchAuthSession();
+        if (session.groupConfig) {
+          setGroupConfig(session.groupConfig);
+        }
+        if (session.authenticated && session.user) {
+          setAuthUser(session.user);
+          setIsGroupMember(!!session.isGroupMember);
+          setGroupRole(session.groupRole || null);
 
-    loadHistoryData();
+          // If creatorId is empty, auto populate with user id
+          if (!creatorId) {
+            setCreatorId(session.user.id);
+            localStorage.setItem(STORAGE_KEYS.CREATOR_ID, session.user.id);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch auth session:', err);
+      } finally {
+        setIsAuthLoading(false);
+      }
+    }
+
+    initAuth();
   }, []);
 
+  // When user is a verified group member, load system status and history
+  useEffect(() => {
+    if (authUser && isGroupMember) {
+      fetchSystemStatus()
+        .then(setSystemStatus)
+        .catch((err) => console.error('Status check failed:', err));
+
+      loadHistoryData();
+    }
+  }, [authUser, isGroupMember]);
+
   const loadHistoryData = async () => {
+    if (!authUser || !isGroupMember) return;
     setIsHistoryLoading(true);
     try {
       const list = await fetchHistory();
@@ -124,6 +178,25 @@ export default function App() {
     } finally {
       setIsHistoryLoading(false);
     }
+  };
+
+  const handleAuthSuccess = (user: RobloxAuthUser, isMember: boolean, role?: RobloxGroupRole | null) => {
+    setAuthUser(user);
+    setIsGroupMember(isMember);
+    setGroupRole(role || null);
+
+    if (!creatorId) {
+      setCreatorId(user.id);
+      localStorage.setItem(STORAGE_KEYS.CREATOR_ID, user.id);
+    }
+  };
+
+  const handleLogout = async () => {
+    await robloxLogout();
+    setAuthUser(null);
+    setIsGroupMember(false);
+    setGroupRole(null);
+    addToast('Sesión de Roblox cerrada', 'info');
   };
 
   // Roblox Account Verification & Save Handler
@@ -218,6 +291,7 @@ export default function App() {
       } else if (youtubeUrl) {
         formData.append('youtubeUrl', youtubeUrl.trim());
       }
+
       formData.append('speed', settings.speed.toString());
       formData.append('amplification', settings.amplification.toString());
       formData.append('maxDuration', settings.maxDuration.toString());
@@ -226,33 +300,34 @@ export default function App() {
       setPreviewAudioUrl(url);
       setIsPreviewModalOpen(true);
     } catch (err: any) {
-      addToast(err.message || 'Error generando vista previa', 'error');
+      addToast(err.message || 'Error al generar la vista previa', 'error');
     } finally {
       setIsPreviewLoading(false);
     }
   };
 
-  // Convert & Upload to Roblox Handler
+  // Start Upload Flow
   const handleStartUpload = async () => {
-    // 1. Validation
     const errors: { creatorId?: string; apiKey?: string } = {};
-    if (!creatorId.trim()) {
-      errors.creatorId = 'El ID de creador es obligatorio';
-    }
-    if (!apiKey.trim()) {
-      errors.apiKey = 'La API Key de Roblox Open Cloud es obligatoria';
-    }
+    if (!creatorId.trim()) errors.creatorId = 'ID de creador obligatorio';
+    if (!apiKey.trim()) errors.apiKey = 'Clave API de Roblox obligatoria';
 
     setFormErrors(errors);
-
-    const hasAudio = selectedFile || (youtubeUrl && youtubeUrl.trim());
-    if (!creatorId.trim() || !apiKey.trim() || !hasAudio) {
-      addToast('Data incomplete: Completa las credenciales de Roblox y el audio', 'error');
+    if (Object.keys(errors).length > 0) {
+      setErrorMessage('Por favor configura y verifica tu cuenta de Roblox con tu clave API antes de subir.');
+      addToast('Faltan credenciales de Roblox', 'error');
       return;
     }
 
-    setErrorMessage(null);
+    const hasAudio = selectedFile || (youtubeUrl && youtubeUrl.trim());
+    if (!hasAudio) {
+      setErrorMessage('Data incomplete: Debes seleccionar un archivo de audio o ingresar un enlace de YouTube.');
+      addToast('Falta el archivo o enlace de audio', 'error');
+      return;
+    }
+
     setIsUploading(true);
+    setErrorMessage(null);
     setLatestResult(null);
 
     try {
@@ -260,75 +335,74 @@ export default function App() {
       formData.append('creatorType', creatorType);
       formData.append('creatorId', creatorId.trim());
       formData.append('apiKey', apiKey.trim());
-      formData.append('speed', settings.speed.toString());
-      formData.append('amplification', settings.amplification.toString());
-      formData.append('maxDuration', settings.maxDuration.toString());
+
+      if (selectedFile) {
+        formData.append('audioFile', selectedFile);
+      } else if (youtubeUrl) {
+        formData.append('youtubeUrl', youtubeUrl.trim());
+      }
 
       if (customTitle.trim()) {
         formData.append('customTitle', customTitle.trim());
       }
 
-      if (detectedAudioInfo?.thumbnail) {
-        formData.append('thumbnail', detectedAudioInfo.thumbnail);
-      }
-      if (detectedAudioInfo?.source) {
-        formData.append('sourceType', detectedAudioInfo.source);
-      }
-
-      if (selectedFile) {
-        formData.append('audioFile', selectedFile);
-      } else if (youtubeUrl.trim()) {
-        formData.append('youtubeUrl', youtubeUrl.trim());
-      }
+      formData.append('speed', settings.speed.toString());
+      formData.append('amplification', settings.amplification.toString());
+      formData.append('maxDuration', settings.maxDuration.toString());
 
       const jobId = await startUploadJob(formData);
 
-      // Subscribe to updates
-      subscribeToJobEvents(
+      setCurrentJobEvent({
+        jobId,
+        status: 'queued',
+        progress: 5,
+        message: 'Iniciando trabajo...',
+      });
+
+      const unsubscribe = subscribeToJobEvents(
         jobId,
         (event) => {
           setCurrentJobEvent(event);
 
-          if (event.status === 'completed' || event.status === 'rejected') {
+          if (event.status === 'completed') {
             setIsUploading(false);
             setLatestResult(event);
             loadHistoryData();
+            addToast(`¡Subida completada con éxito! Asset ID: ${event.assetId}`, 'success');
 
-            if (event.status === 'completed') {
-              try {
-                confetti({
-                  particleCount: 80,
-                  spread: 70,
-                  origin: { y: 0.6 },
-                });
-              } catch {
-                // ignore
-              }
-              addToast(`¡Upload completado! Asset ID: ${event.assetId || ''}`, 'success');
-            } else if (event.status === 'rejected') {
-              addToast('Audio rechazado por moderación de Roblox', 'error');
-            }
+            try {
+              confetti({
+                particleCount: 80,
+                spread: 70,
+                origin: { y: 0.6 },
+              });
+            } catch {}
+          } else if (event.status === 'rejected') {
+            setIsUploading(false);
+            setLatestResult(event);
+            setErrorMessage(`El audio fue rechazado por Roblox: ${event.details || event.message}`);
+            loadHistoryData();
+            addToast('El audio fue bloqueado por moderación de Roblox', 'error');
           } else if (event.status === 'failed') {
             setIsUploading(false);
-            setErrorMessage(event.error || 'Error al procesar o subir a Roblox');
-            loadHistoryData();
+            setErrorMessage(event.error || event.message || 'Error en el procesamiento del audio');
+            addToast(event.error || 'Error al procesar audio', 'error');
           }
         },
         (err) => {
           setIsUploading(false);
-          setErrorMessage(err.message || 'Error de conexión con el servidor.');
+          setErrorMessage(err.message || 'Error de conexión durante el seguimiento del trabajo');
+          addToast('Error de conexión en el progreso', 'error');
         }
       );
     } catch (err: any) {
       setIsUploading(false);
-      setErrorMessage(err.message || 'Error al iniciar upload');
-      addToast(err.message || 'Error al iniciar upload', 'error');
+      setErrorMessage(err.message || 'Error al iniciar la subida');
+      addToast(err.message || 'Error al iniciar subida', 'error');
     }
   };
 
   const handleRetry = () => {
-    setErrorMessage(null);
-    setCurrentJobEvent(null);
     handleStartUpload();
   };
 
@@ -338,137 +412,169 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#080C14] text-slate-100 selection:bg-blue-600 selection:text-white pb-16">
-      {/* Top Navigation / Brand Header */}
-      <Header systemStatus={systemStatus} onOpenHelp={() => setIsHelpOpen(true)} />
+    <RobloxAuthGate
+      authUser={authUser}
+      isGroupMember={isGroupMember}
+      groupRole={groupRole}
+      groupConfig={groupConfig}
+      isLoading={isAuthLoading}
+      onAuthSuccess={handleAuthSuccess}
+      onLogout={handleLogout}
+      onShowToast={addToast}
+      onOpenGroupConfig={() => setIsGroupModalOpen(true)}
+    >
+      <div className="min-h-screen bg-[#080C14] text-slate-100 flex flex-col font-sans selection:bg-blue-500 selection:text-white pb-16">
+        {/* Top Navbar */}
+        <Header
+          systemStatus={systemStatus}
+          onOpenHelp={() => setIsHelpOpen(true)}
+          authUser={authUser}
+          isGroupMember={isGroupMember}
+          groupRole={groupRole}
+          groupConfig={groupConfig}
+          onOpenGroupConfig={() => setIsGroupModalOpen(true)}
+          onLogout={handleLogout}
+        />
 
-      {/* Main Container */}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 pt-6 sm:pt-8 space-y-6">
-        {/* Banner/Title Area */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/60 pb-4">
-          <div>
-            <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center gap-2">
-              <span>Panel de Conversión & Upload</span>
-              <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-600/20 text-blue-400 border border-blue-500/30">
-                Roblox Creator
-              </span>
-            </h2>
-            <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
-              Convierte archivos de audio o YouTube aplicando velocidad, amplificación y súbelos directamente a Roblox.
-            </p>
+        {/* Main App Container */}
+        <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+          {/* Hero Section Banner */}
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-blue-900/20 via-slate-900/40 to-slate-900/20 border border-blue-500/20 backdrop-blur-sm">
+            <div>
+              <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center gap-2">
+                <span>Panel de Conversión & Upload</span>
+                <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-600/20 text-blue-400 border border-blue-500/30">
+                  Roblox Creator
+                </span>
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
+                Convierte archivos de audio o enlaces aplicando velocidad y súbelos directamente a Roblox.
+              </p>
+            </div>
           </div>
-        </div>
 
-        {/* Success / Result Showcase Banner */}
-        {latestResult && (
-          <ResultCard
-            jobEvent={latestResult}
-            apiKey={apiKey}
-            onDismiss={() => setLatestResult(null)}
-            onShowToast={addToast}
-            onModerationUpdated={loadHistoryData}
-          />
-        )}
-
-        {/* Dashboard Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Left Column: Roblox Account & Audio Input */}
-          <div className="space-y-6">
-            <RobloxAccountCard
-              creatorType={creatorType}
-              onCreatorTypeChange={(type) => {
-                setCreatorType(type);
-                localStorage.setItem(STORAGE_KEYS.CREATOR_TYPE, type);
-              }}
-              creatorId={creatorId}
-              onCreatorIdChange={(id) => {
-                setCreatorId(id);
-                localStorage.setItem(STORAGE_KEYS.CREATOR_ID, id);
-              }}
+          {/* Success / Result Showcase Banner */}
+          {latestResult && (
+            <ResultCard
+              jobEvent={latestResult}
               apiKey={apiKey}
-              onApiKeyChange={(key) => {
-                setApiKey(key);
-                localStorage.setItem(STORAGE_KEYS.API_KEY, key);
-              }}
-              verifiedProfile={verifiedProfile}
-              onVerifyAndSave={handleVerifyAndSave}
-              onUnlinkAccount={handleUnlinkAccount}
-              isVerifying={isVerifying}
-              verifyError={verifyError}
-              errors={formErrors}
+              onDismiss={() => setLatestResult(null)}
               onShowToast={addToast}
+              onModerationUpdated={loadHistoryData}
             />
+          )}
 
-            <AudioSourceCard
-              youtubeUrl={youtubeUrl}
-              onYoutubeUrlChange={setYoutubeUrl}
-              selectedFile={selectedFile}
-              onFileSelect={setSelectedFile}
-              customTitle={customTitle}
-              onCustomTitleChange={setCustomTitle}
-              settings={settings}
-              onShowToast={addToast}
-              onDetectedInfoChange={setDetectedAudioInfo}
-            />
+          {/* Dashboard Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Left Column: Roblox Account & Audio Input */}
+            <div className="space-y-6">
+              <RobloxAccountCard
+                creatorType={creatorType}
+                onCreatorTypeChange={(type) => {
+                  setCreatorType(type);
+                  localStorage.setItem(STORAGE_KEYS.CREATOR_TYPE, type);
+                }}
+                creatorId={creatorId}
+                onCreatorIdChange={(id) => {
+                  setCreatorId(id);
+                  localStorage.setItem(STORAGE_KEYS.CREATOR_ID, id);
+                }}
+                apiKey={apiKey}
+                onApiKeyChange={(key) => {
+                  setApiKey(key);
+                  localStorage.setItem(STORAGE_KEYS.API_KEY, key);
+                }}
+                verifiedProfile={verifiedProfile}
+                onVerifyAndSave={handleVerifyAndSave}
+                onUnlinkAccount={handleUnlinkAccount}
+                isVerifying={isVerifying}
+                verifyError={verifyError}
+                errors={formErrors}
+                onShowToast={addToast}
+              />
+
+              <AudioSourceCard
+                youtubeUrl={youtubeUrl}
+                onYoutubeUrlChange={setYoutubeUrl}
+                selectedFile={selectedFile}
+                onFileSelect={setSelectedFile}
+                customTitle={customTitle}
+                onCustomTitleChange={setCustomTitle}
+                settings={settings}
+                onShowToast={addToast}
+                onDetectedInfoChange={setDetectedAudioInfo}
+              />
+            </div>
+
+            {/* Right Column: Advanced Settings & Main Action */}
+            <div className="space-y-6">
+              <AdvancedSettingsCard
+                settings={settings}
+                onSettingsChange={setSettings}
+                onOpenPreview={handleOpenPreview}
+                hasAudioSource={!!selectedFile || (!!youtubeUrl && youtubeUrl.trim().length > 0)}
+                isPreviewLoading={isPreviewLoading}
+              />
+
+              <ProgressCard
+                isUploading={isUploading}
+                currentJobEvent={currentJobEvent}
+                errorMessage={errorMessage}
+                onStartUpload={handleStartUpload}
+                onRetry={handleRetry}
+                onDismissError={handleDismissError}
+                canUpload={!isUploading}
+              />
+            </div>
           </div>
 
-          {/* Right Column: Advanced Settings & Main Action */}
-          <div className="space-y-6">
-            <AdvancedSettingsCard
-              settings={settings}
-              onSettingsChange={setSettings}
-              onOpenPreview={handleOpenPreview}
-              hasAudioSource={!!selectedFile || (!!youtubeUrl && youtubeUrl.trim().length > 0)}
-              isPreviewLoading={isPreviewLoading}
-            />
-
-            <ProgressCard
-              isUploading={isUploading}
-              currentJobEvent={currentJobEvent}
-              errorMessage={errorMessage}
-              onStartUpload={handleStartUpload}
-              onRetry={handleRetry}
-              onDismissError={handleDismissError}
-              canUpload={!isUploading}
+          {/* History Section */}
+          <div className="pt-2">
+            <HistoryTable
+              history={history}
+              apiKey={apiKey}
+              onClearHistory={handleClearHistory}
+              onShowToast={addToast}
+              onReloadHistory={loadHistoryData}
+              isLoading={isHistoryLoading}
             />
           </div>
-        </div>
+        </main>
 
-        {/* History Section */}
-        <div className="pt-2">
-          <HistoryTable
-            history={history}
-            apiKey={apiKey}
-            onClearHistory={handleClearHistory}
-            onShowToast={addToast}
-            onReloadHistory={loadHistoryData}
-            isLoading={isHistoryLoading}
-          />
-        </div>
-      </main>
+        {/* Audio Preview Modal */}
+        <AudioPreviewModal
+          isOpen={isPreviewModalOpen}
+          onClose={() => {
+            setIsPreviewModalOpen(false);
+            if (previewAudioUrl) {
+              URL.revokeObjectURL(previewAudioUrl);
+              setPreviewAudioUrl(null);
+            }
+          }}
+          audioUrl={previewAudioUrl}
+          speed={settings.speed}
+          amplification={settings.amplification}
+          maxDuration={settings.maxDuration}
+          title={customTitle || (selectedFile ? selectedFile.name : 'Audio YouTube')}
+        />
 
-      {/* Audio Preview Modal */}
-      <AudioPreviewModal
-        isOpen={isPreviewModalOpen}
-        onClose={() => {
-          setIsPreviewModalOpen(false);
-          if (previewAudioUrl) {
-            URL.revokeObjectURL(previewAudioUrl);
-            setPreviewAudioUrl(null);
-          }
-        }}
-        audioUrl={previewAudioUrl}
-        speed={settings.speed}
-        amplification={settings.amplification}
-        maxDuration={settings.maxDuration}
-        title={customTitle || (selectedFile ? selectedFile.name : 'Audio YouTube')}
-      />
+        {/* Help Modal */}
+        <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
 
-      {/* Help Modal */}
-      <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+        {/* Group Configuration Modal */}
+        <GroupConfigModal
+          isOpen={isGroupModalOpen}
+          onClose={() => setIsGroupModalOpen(false)}
+          currentConfig={groupConfig}
+          onConfigUpdated={(newConfig) => {
+            setGroupConfig(newConfig);
+          }}
+          onShowToast={addToast}
+        />
 
-      {/* Toast notifications */}
-      <ToastContainer toasts={toasts} onDismiss={removeToast} />
-    </div>
+        {/* Toast notifications */}
+        <ToastContainer toasts={toasts} onDismiss={removeToast} />
+      </div>
+    </RobloxAuthGate>
   );
 }

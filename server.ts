@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import crypto from 'crypto';
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import multer from 'multer';
@@ -9,7 +10,14 @@ import FormData from 'form-data';
 import axios from 'axios';
 import ytdl from '@distube/ytdl-core';
 import { createServer as createViteServer } from 'vite';
-import { UploadHistoryItem, JobStatus, JobProgressEvent } from './src/types';
+import {
+  UploadHistoryItem,
+  JobStatus,
+  JobProgressEvent,
+  RobloxGroupConfig,
+  RobloxAuthUser,
+  RobloxGroupRole,
+} from './src/types';
 
 const execFileAsync = promisify(execFile);
 
@@ -22,12 +30,55 @@ if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
 
-// History file storage
+// Data directory and storage files
 const DATA_DIR = path.join(process.cwd(), 'data');
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
+const GROUP_CONFIG_FILE = path.join(DATA_DIR, 'group_config.json');
+const SESSION_SECRET = process.env.ROBLOX_AUTH_SECRET || 'maykel_uploader_secure_auth_session_secret_2026';
+
+// Centralized Roblox Group Configuration
+const DEFAULT_GROUP_CONFIG: RobloxGroupConfig = {
+  groupId: '35083161',
+  groupName: 'MAYKEL Official Community',
+  groupUrl: 'https://www.roblox.com/groups/35083161',
+  groupIconUrl: '',
+  memberCount: 0,
+  description: 'Grupo oficial de Roblox para usuarios de MAYKEL Audio Uploader.',
+};
+
+function loadGroupConfig(): RobloxGroupConfig {
+  try {
+    if (fs.existsSync(GROUP_CONFIG_FILE)) {
+      const data = fs.readFileSync(GROUP_CONFIG_FILE, 'utf-8');
+      return { ...DEFAULT_GROUP_CONFIG, ...JSON.parse(data) };
+    }
+  } catch (err) {
+    console.error('Error loading group config:', err);
+  }
+  return { ...DEFAULT_GROUP_CONFIG };
+}
+
+function saveGroupConfig(updates: Partial<RobloxGroupConfig>): RobloxGroupConfig {
+  try {
+    const current = loadGroupConfig();
+    const updated: RobloxGroupConfig = {
+      ...current,
+      ...updates,
+      groupId: (updates.groupId || current.groupId).toString().trim().replace(/[^\d]/g, ''),
+    };
+    if (!updated.groupUrl || updated.groupUrl.includes('roblox.com/groups/')) {
+      updated.groupUrl = `https://www.roblox.com/groups/${updated.groupId}`;
+    }
+    fs.writeFileSync(GROUP_CONFIG_FILE, JSON.stringify(updated, null, 2), 'utf-8');
+    return updated;
+  } catch (err) {
+    console.error('Error saving group config:', err);
+    return loadGroupConfig();
+  }
+}
 
 // In-memory active jobs
 interface ActiveJob {
@@ -361,6 +412,260 @@ async function processAudioWithFFmpeg({
   });
 }
 
+// Helper: Fetch Roblox Group Details
+async function fetchRobloxGroupDetails(
+  groupId: string
+): Promise<{ name?: string; memberCount?: number; iconUrl?: string; description?: string }> {
+  const cleanId = (groupId || '').toString().trim().replace(/[^\d]/g, '');
+  if (!cleanId) return {};
+
+  try {
+    const res = await axios.get(`https://groups.roblox.com/v1/groups/${cleanId}`, {
+      timeout: 8000,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)',
+      },
+    });
+    const name = res.data?.name;
+    const memberCount = res.data?.memberCount;
+    const description = res.data?.description;
+
+    let iconUrl = '';
+    try {
+      const iconRes = await axios.get(
+        `https://thumbnails.roblox.com/v1/groups/icons?groupIds=${cleanId}&size=150x150&format=Png`,
+        { timeout: 8000 }
+      );
+      if (iconRes.data?.data?.[0]?.imageUrl) {
+        iconUrl = iconRes.data.data[0].imageUrl;
+      }
+    } catch {
+      // ignore thumbnail error
+    }
+
+    return { name, memberCount, iconUrl, description };
+  } catch (err: any) {
+    console.warn('Error fetching group details from Roblox:', err.message);
+    return {};
+  }
+}
+
+// Helper: Resolve Roblox User from Username or User ID
+async function resolveRobloxUser(usernameOrId: string): Promise<RobloxAuthUser | null> {
+  const cleanInput = (usernameOrId || '').trim().replace(/^@/, '');
+  if (!cleanInput) return null;
+
+  const isNumeric = /^\d+$/.test(cleanInput);
+  let userId = '';
+  let name = '';
+  let displayName = '';
+  let isVerified = false;
+
+  if (isNumeric) {
+    try {
+      const userRes = await axios.get(`https://users.roblox.com/v1/users/${cleanInput}`, {
+        timeout: 9000,
+      });
+      userId = userRes.data.id.toString();
+      name = userRes.data.name;
+      displayName = userRes.data.displayName || name;
+      isVerified = !!userRes.data.hasVerifiedBadge;
+    } catch (err: any) {
+      if (err.response?.status === 404) return null;
+      throw new Error(`Usuario con ID ${cleanInput} no encontrado en Roblox.`);
+    }
+  } else {
+    try {
+      const searchRes = await axios.post(
+        'https://users.roblox.com/v1/usernames/users',
+        { usernames: [cleanInput], excludeBannedUsers: false },
+        {
+          timeout: 9000,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      const userObj = searchRes.data?.data?.[0];
+      if (!userObj) {
+        return null;
+      }
+      userId = userObj.id.toString();
+      name = userObj.name;
+      displayName = userObj.displayName || name;
+      isVerified = !!userObj.hasVerifiedBadge;
+    } catch (err: any) {
+      throw new Error(`Error al buscar usuario "${cleanInput}" en Roblox: ${err.message}`);
+    }
+  }
+
+  // Fetch avatar headshot
+  let avatarUrl = `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=150&height=150&format=png`;
+  try {
+    const thumbRes = await axios.get(
+      `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=150x150&format=Png&isCircular=false`,
+      { timeout: 8000 }
+    );
+    if (thumbRes.data?.data?.[0]?.imageUrl) {
+      avatarUrl = thumbRes.data.data[0].imageUrl;
+    }
+  } catch {
+    // fallback headshot URL already set
+  }
+
+  return {
+    id: userId,
+    username: name,
+    displayName: displayName || name,
+    avatarUrl,
+    isVerified,
+  };
+}
+
+// Helper: Check if User belongs to configured Roblox Group
+async function checkUserInGroup(
+  userId: string,
+  targetGroupId: string
+): Promise<{ isMember: boolean; role?: RobloxGroupRole | null }> {
+  const cleanUserId = (userId || '').toString().trim().replace(/[^\d]/g, '');
+  const cleanGroupId = (targetGroupId || '').toString().trim().replace(/[^\d]/g, '');
+
+  if (!cleanUserId || !cleanGroupId) {
+    return { isMember: false, role: null };
+  }
+
+  // Attempt 1: groups.roblox.com/v2/users/{userId}/groups/roles
+  try {
+    const res = await axios.get(`https://groups.roblox.com/v2/users/${cleanUserId}/groups/roles`, {
+      timeout: 10000,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)',
+      },
+    });
+
+    const groups = res.data?.data || [];
+    const match = groups.find((g: any) => g.group?.id?.toString() === cleanGroupId);
+    if (match) {
+      return {
+        isMember: true,
+        role: {
+          id: match.role?.id || 0,
+          name: match.role?.name || 'Miembro',
+          rank: match.role?.rank || 1,
+        },
+      };
+    }
+  } catch (v2Err: any) {
+    // Attempt 2: fallback to v1 API
+    try {
+      const v1Res = await axios.get(`https://groups.roblox.com/v1/users/${cleanUserId}/groups/roles`, {
+        timeout: 10000,
+        headers: { 'Accept': 'application/json' },
+      });
+      const groups = v1Res.data?.data || [];
+      const match = groups.find((g: any) => g.group?.id?.toString() === cleanGroupId);
+      if (match) {
+        return {
+          isMember: true,
+          role: {
+            id: match.role?.id || 0,
+            name: match.role?.name || 'Miembro',
+            rank: match.role?.rank || 1,
+          },
+        };
+      }
+    } catch (v1Err: any) {
+      console.warn('Group check warning on Roblox APIs:', v1Err.message);
+    }
+  }
+
+  return { isMember: false, role: null };
+}
+
+// Session Token Types & Crypto Helpers
+interface SessionPayload {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string;
+  isVerified?: boolean;
+  isGroupMember: boolean;
+  groupId: string;
+  groupRole?: RobloxGroupRole | null;
+  issuedAt: number;
+  expiresAt: number;
+}
+
+function createSessionToken(payload: Omit<SessionPayload, 'issuedAt' | 'expiresAt'>): string {
+  const issuedAt = Date.now();
+  const expiresAt = issuedAt + 14 * 24 * 60 * 60 * 1000; // 14 days
+  const fullPayload: SessionPayload = { ...payload, issuedAt, expiresAt };
+  const jsonStr = JSON.stringify(fullPayload);
+  const base64Data = Buffer.from(jsonStr).toString('base64url');
+  const signature = crypto.createHmac('sha256', SESSION_SECRET).update(base64Data).digest('base64url');
+  return `${base64Data}.${signature}`;
+}
+
+function parseAndVerifySessionToken(token: string): SessionPayload | null {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [base64Data, signature] = parts;
+  const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(base64Data).digest('base64url');
+  if (signature !== expectedSig) return null;
+
+  try {
+    const rawJson = Buffer.from(base64Data, 'base64url').toString('utf-8');
+    const payload = JSON.parse(rawJson) as SessionPayload;
+    if (!payload.expiresAt || payload.expiresAt < Date.now()) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+// Helper: Extract session from Request
+function extractSession(req: express.Request): SessionPayload | null {
+  const authHeader = req.headers['authorization'] || req.headers['x-roblox-session'];
+  let token = '';
+  if (typeof authHeader === 'string') {
+    if (authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7).trim();
+    } else {
+      token = authHeader.trim();
+    }
+  }
+  if (!token && req.query.sessionToken && typeof req.query.sessionToken === 'string') {
+    token = req.query.sessionToken;
+  }
+  return parseAndVerifySessionToken(token);
+}
+
+// Security Middleware: Require active Roblox Group Membership
+function requireGroupMember(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const session = extractSession(req);
+  if (!session) {
+    return res.status(401).json({
+      error: 'AUTH_REQUIRED',
+      message: 'Debes iniciar sesión con tu cuenta de Roblox para acceder a esta función.',
+    });
+  }
+
+  const groupConfig = loadGroupConfig();
+  if (!session.isGroupMember || session.groupId !== groupConfig.groupId) {
+    return res.status(403).json({
+      error: 'GROUP_MEMBERSHIP_REQUIRED',
+      message: `Acceso restringido: Para utilizar MAYKEL Audio Uploader debes pertenecer a nuestro grupo de Roblox "${groupConfig.groupName}".`,
+      groupConfig,
+    });
+  }
+
+  (req as any).userSession = session;
+  next();
+}
+
 // Clean up temporary files
 function cleanupFiles(filePaths: string[]) {
   filePaths.forEach((f) => {
@@ -375,6 +680,219 @@ function cleanupFiles(filePaths: string[]) {
 }
 
 // ================= API ROUTES =================
+
+// Group Configuration Endpoints
+app.get('/api/roblox/group-config', async (_req, res) => {
+  const config = loadGroupConfig();
+  // If icon or member count is missing, try to fetch in background
+  if (!config.groupIconUrl || !config.memberCount) {
+    try {
+      const details = await fetchRobloxGroupDetails(config.groupId);
+      if (details.name || details.iconUrl) {
+        const updated = saveGroupConfig({
+          groupName: details.name || config.groupName,
+          groupIconUrl: details.iconUrl || config.groupIconUrl,
+          memberCount: details.memberCount || config.memberCount,
+          description: details.description || config.description,
+        });
+        return res.json({ success: true, config: updated });
+      }
+    } catch {}
+  }
+  res.json({ success: true, config });
+});
+
+app.post('/api/roblox/group-config', async (req, res) => {
+  try {
+    const { groupId, groupName, groupUrl, description } = req.body;
+    if (!groupId || !groupId.toString().trim()) {
+      return res.status(400).json({ success: false, error: 'El Group ID es obligatorio.' });
+    }
+
+    const cleanId = groupId.toString().trim().replace(/[^\d]/g, '');
+    let details: any = {};
+    try {
+      details = await fetchRobloxGroupDetails(cleanId);
+    } catch {}
+
+    const updated = saveGroupConfig({
+      groupId: cleanId,
+      groupName: groupName?.trim() || details.name || `Grupo Roblox (${cleanId})`,
+      groupUrl: groupUrl?.trim() || `https://www.roblox.com/groups/${cleanId}`,
+      groupIconUrl: details.iconUrl || '',
+      memberCount: details.memberCount || 0,
+      description: description?.trim() || details.description || '',
+    });
+
+    res.json({ success: true, config: updated, message: 'Configuración de grupo guardada correctamente.' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Error guardando configuración de grupo.' });
+  }
+});
+
+// Roblox Authentication: Login Endpoint (Username / User ID)
+app.post('/api/roblox/auth/login', async (req, res) => {
+  try {
+    const { usernameOrId } = req.body;
+    if (!usernameOrId || !usernameOrId.toString().trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Ingresa tu nombre de usuario o User ID de Roblox.',
+      });
+    }
+
+    const user = await resolveRobloxUser(usernameOrId.toString().trim());
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: `No se encontró la cuenta de Roblox "${usernameOrId}". Verifica que el nombre de usuario o ID sea correcto.`,
+      });
+    }
+
+    const groupConfig = loadGroupConfig();
+    // Verify group membership against Roblox official API
+    const { isMember, role } = await checkUserInGroup(user.id, groupConfig.groupId);
+
+    const token = createSessionToken({
+      userId: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      isVerified: user.isVerified,
+      isGroupMember: isMember,
+      groupId: groupConfig.groupId,
+      groupRole: role,
+    });
+
+    res.json({
+      success: true,
+      user,
+      isGroupMember: isMember,
+      groupRole: role,
+      groupConfig,
+      token,
+      message: isMember
+        ? `¡Bienvenido, ${user.displayName}! Eres miembro verificado del grupo.`
+        : `Acceso restringido: La cuenta ${user.username} no pertenece al grupo oficial de Roblox.`,
+    });
+  } catch (err: any) {
+    console.error('Roblox login error:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message || 'Error al autenticar con Roblox.',
+    });
+  }
+});
+
+// Roblox Authentication: Re-Verify Group Membership Endpoint
+app.post('/api/roblox/auth/verify-membership', async (req, res) => {
+  try {
+    const session = extractSession(req);
+    const { userId: bodyUserId } = req.body;
+    const targetUserId = session?.userId || bodyUserId;
+
+    if (!targetUserId) {
+      return res.status(400).json({
+        success: false,
+        error: 'No se encontró la sesión ni el User ID de Roblox.',
+      });
+    }
+
+    const groupConfig = loadGroupConfig();
+    const { isMember, role } = await checkUserInGroup(targetUserId, groupConfig.groupId);
+
+    // If user info is available, generate fresh token
+    let user: RobloxAuthUser | null = session
+      ? {
+          id: session.userId,
+          username: session.username,
+          displayName: session.displayName,
+          avatarUrl: session.avatarUrl,
+          isVerified: session.isVerified,
+        }
+      : null;
+
+    if (!user) {
+      user = await resolveRobloxUser(targetUserId);
+    }
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'Usuario de Roblox no encontrado.' });
+    }
+
+    const token = createSessionToken({
+      userId: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      isVerified: user.isVerified,
+      isGroupMember: isMember,
+      groupId: groupConfig.groupId,
+      groupRole: role,
+    });
+
+    res.json({
+      success: true,
+      user,
+      isGroupMember: isMember,
+      groupRole: role,
+      groupConfig,
+      token,
+      message: isMember
+        ? '¡Excelente! Ahora eres miembro del grupo. Acceso desbloqueado.'
+        : 'Todavía no apareces como miembro del grupo. Únete y vuelve a intentarlo.',
+    });
+  } catch (err: any) {
+    console.error('Verify membership error:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message || 'Error al verificar membresía en Roblox.',
+    });
+  }
+});
+
+// Roblox Authentication: Get Current Session Status Endpoint
+app.get('/api/roblox/auth/session', async (req, res) => {
+  const session = extractSession(req);
+  const groupConfig = loadGroupConfig();
+
+  if (!session) {
+    return res.json({
+      success: true,
+      authenticated: false,
+      groupConfig,
+    });
+  }
+
+  // If group ID in server changed, recheck membership
+  let isMember = session.isGroupMember;
+  let role = session.groupRole;
+  if (session.groupId !== groupConfig.groupId) {
+    const check = await checkUserInGroup(session.userId, groupConfig.groupId);
+    isMember = check.isMember;
+    role = check.role;
+  }
+
+  res.json({
+    success: true,
+    authenticated: true,
+    user: {
+      id: session.userId,
+      username: session.username,
+      displayName: session.displayName,
+      avatarUrl: session.avatarUrl,
+      isVerified: session.isVerified,
+    },
+    isGroupMember: isMember,
+    groupRole: role,
+    groupConfig,
+  });
+});
+
+// Roblox Authentication: Logout Endpoint
+app.post('/api/roblox/auth/logout', (_req, res) => {
+  res.json({ success: true, message: 'Sesión cerrada correctamente.' });
+});
 
 // Roblox Account Verification Endpoint
 app.post('/api/roblox/verify', async (req, res) => {
@@ -513,13 +1031,13 @@ app.get('/api/system-status', async (_req, res) => {
 });
 
 // Upload History List
-app.get('/api/history', (_req, res) => {
+app.get('/api/history', requireGroupMember, (_req, res) => {
   const history = loadHistory();
   res.json(history);
 });
 
 // Clear Upload History
-app.delete('/api/history', (_req, res) => {
+app.delete('/api/history', requireGroupMember, (_req, res) => {
   try {
     fs.writeFileSync(HISTORY_FILE, '[]', 'utf-8');
     res.json({ success: true, message: 'Historial borrado' });
@@ -529,7 +1047,7 @@ app.delete('/api/history', (_req, res) => {
 });
 
 // Check Moderation of a Roblox Asset
-app.post('/api/roblox/check-moderation', async (req, res) => {
+app.post('/api/roblox/check-moderation', requireGroupMember, async (req, res) => {
   try {
     const { assetId, operationId, apiKey, historyId } = req.body;
     const cleanAssetId = (assetId || '').toString().replace(/[^\d]/g, '').trim();
@@ -695,7 +1213,7 @@ app.post('/api/roblox/check-moderation', async (req, res) => {
 });
 
 // Fetch Audio Info from link (YouTube, SoundCloud, direct audio URLs)
-app.post('/api/audio-info', async (req, res) => {
+app.post('/api/audio-info', requireGroupMember, async (req, res) => {
   try {
     const { url } = req.body;
     if (!url || typeof url !== 'string' || !url.trim()) {
@@ -818,7 +1336,7 @@ app.post('/api/audio-info', async (req, res) => {
 });
 
 // Audio Preview endpoint (processes and streams MP3 directly to browser)
-app.post('/api/preview-audio', upload.single('audioFile'), async (req, res) => {
+app.post('/api/preview-audio', requireGroupMember, upload.single('audioFile'), async (req, res) => {
   const tempFiles: string[] = [];
   try {
     const ffmpegOk = await checkFFmpeg();
@@ -875,7 +1393,7 @@ app.post('/api/preview-audio', upload.single('audioFile'), async (req, res) => {
 });
 
 // SSE endpoint for job status stream
-app.get('/api/jobs/:jobId/events', (req, res) => {
+app.get('/api/jobs/:jobId/events', requireGroupMember, (req, res) => {
   const { jobId } = req.params;
   const job = activeJobs.get(jobId);
 
@@ -916,7 +1434,7 @@ app.get('/api/jobs/:jobId/events', (req, res) => {
 });
 
 // Polling fallback endpoint for job status
-app.get('/api/jobs/:jobId', (req, res) => {
+app.get('/api/jobs/:jobId', requireGroupMember, (req, res) => {
   const { jobId } = req.params;
   const job = activeJobs.get(jobId);
   if (!job) {
@@ -936,7 +1454,7 @@ app.get('/api/jobs/:jobId', (req, res) => {
 });
 
 // Main Convert & Upload to Roblox endpoint
-app.post('/api/upload', upload.single('audioFile'), async (req, res) => {
+app.post('/api/upload', requireGroupMember, upload.single('audioFile'), async (req, res) => {
   const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
   try {
