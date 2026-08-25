@@ -1,0 +1,6 @@
+{
+  "name": "MAYKEL Audio Uploader",
+  "description": "Convert and upload audio directly to Roblox Creator with custom speed, amplification, and YouTube support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

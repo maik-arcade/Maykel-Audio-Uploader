@@ -1,0 +1,54 @@
+[
+  {
+    "id": "job_1787675161390_ohs48la",
+    "timestamp": 1787675161964,
+    "displayName": "Cancion de Prueba (2.33x!) - Maykel",
+    "sourceType": "youtube",
+    "creatorType": "User",
+    "creatorId": "1",
+    "speed": 2.33,
+    "amplification": -4,
+    "maxDuration": 10,
+    "status": "Failed",
+    "errorMessage": "🔑 API Key de Roblox inválida o expirada.\n\nComprueba tu clave en roblox.com/dashboard/credentials y asegúrate de haberla copiado completa."
+  },
+  {
+    "id": "job_1787674810466_uaq7zkd",
+    "timestamp": 1787674814338,
+    "displayName": "MAYKEL Audio",
+    "sourceType": "youtube",
+    "creatorType": "User",
+    "creatorId": "8849207993",
+    "speed": 2.33,
+    "amplification": -4,
+    "maxDuration": 400,
+    "status": "Failed",
+    "errorMessage": "⚠️ YouTube bloqueó la descarga en este servidor en la nube con su protección antibot (\"Sign in to confirm you’re not a bot\").\n\n💡 ¿Cómo solucionarlo al instante?\n1. Puedes usar un enlace de SoundCloud o enlace directo de audio.\n2. O descarga el audio (.mp3 o .wav) en tu dispositivo y arrástralo a la pestaña \"Subir Archivo Local\". ¡MAYKEL lo procesará a velocidad 2.33x y lo subirá a Roblox en segundos!"
+  },
+  {
+    "id": "job_1787673972112_js09wzb",
+    "timestamp": 1787673972916,
+    "displayName": "MAYKEL Audio",
+    "sourceType": "youtube",
+    "creatorType": "User",
+    "creatorId": "8849207993",
+    "speed": 2.33,
+    "amplification": -4,
+    "maxDuration": 400,
+    "status": "Failed",
+    "errorMessage": "No se pudo procesar el enlace de YouTube: Sign in to confirm you’re not a bot"
+  },
+  {
+    "id": "job_1787673963893_y0bdgw7",
+    "timestamp": 1787673965025,
+    "displayName": "MAYKEL Audio",
+    "sourceType": "youtube",
+    "creatorType": "User",
+    "creatorId": "8849207993",
+    "speed": 2.33,
+    "amplification": -4,
+    "maxDuration": 400,
+    "status": "Failed",
+    "errorMessage": "No se pudo procesar el enlace de YouTube: Sign in to confirm you’re not a bot"
+  }
+]
