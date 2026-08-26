@@ -20,6 +20,8 @@ import {
   ExternalLink,
   Clock,
   Radio,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { UploadSettings, AudioInfo } from '../types';
 import { fetchAudioInfo, requestAudioPreview } from '../services/api';
@@ -82,6 +84,7 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
   const [detectedInfo, setDetectedInfo] = useState<AudioInfo | null>(null);
   const [isFetchingInfo, setIsFetchingInfo] = useState(false);
   const [lastFetchedUrl, setLastFetchedUrl] = useState<string>('');
+  const [showVideoPlayer, setShowVideoPlayer] = useState(false);
 
   // Notify parent of detectedInfo updates
   useEffect(() => {
@@ -628,13 +631,18 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
           {/* Song Info Header Card */}
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3.5 pb-3 border-b border-slate-800/80">
             <div className="flex items-center gap-3.5 min-w-0">
-              {/* Thumbnail or Icon */}
+              {/* Thumbnail or Icon with fallback */}
               {detectedInfo.thumbnail ? (
-                <div className="w-14 h-14 rounded-xl overflow-hidden border border-slate-700/80 flex-shrink-0 shadow-md relative group">
+                <div className="w-16 h-16 rounded-xl overflow-hidden border border-slate-700/80 flex-shrink-0 shadow-md relative group bg-black/40">
                   <img
                     src={detectedInfo.thumbnail}
                     alt={detectedInfo.title}
                     referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      if (detectedInfo.videoId && !e.currentTarget.src.includes('hqdefault')) {
+                        e.currentTarget.src = `https://i.ytimg.com/vi/${detectedInfo.videoId}/hqdefault.jpg`;
+                      }
+                    }}
                     className="w-full h-full object-cover"
                   />
                   <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
@@ -642,7 +650,7 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-white flex-shrink-0 shadow-md">
+                <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-white flex-shrink-0 shadow-md">
                   <Music className="w-6 h-6" />
                 </div>
               )}
@@ -669,23 +677,53 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
               </div>
             </div>
 
-            {/* Quick Action: Apply as Roblox Display Name */}
-            {detectedInfo.title && customTitle !== detectedInfo.title && (
-              <button
-                type="button"
-                id="apply-detected-title-btn"
-                onClick={() => {
-                  onCustomTitleChange(detectedInfo.title.substring(0, 50));
-                  onShowToast('Título asignado para Roblox', 'info');
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 transition-all flex-shrink-0"
-                title="Usar el título de esta canción como nombre en Roblox"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-blue-400" />
-                <span>Usar este nombre en Roblox</span>
-              </button>
-            )}
+            {/* Quick Action Buttons */}
+            <div className="flex items-center gap-2 flex-wrap flex-shrink-0">
+              {/* Toggle Video Player Button if YouTube/Embed is available */}
+              {(detectedInfo.embedUrl || detectedInfo.videoId) && (
+                <button
+                  type="button"
+                  id="toggle-video-embed-btn"
+                  onClick={() => setShowVideoPlayer(!showVideoPlayer)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-all flex-shrink-0"
+                  title="Ver video para confirmar que es la canción deseada"
+                >
+                  {showVideoPlayer ? <EyeOff className="w-3.5 h-3.5 text-slate-400" /> : <Eye className="w-3.5 h-3.5 text-blue-400" />}
+                  <span>{showVideoPlayer ? 'Ocultar Video' : 'Ver Video'}</span>
+                </button>
+              )}
+
+              {/* Quick Action: Apply as Roblox Display Name */}
+              {detectedInfo.title && customTitle !== detectedInfo.title && (
+                <button
+                  type="button"
+                  id="apply-detected-title-btn"
+                  onClick={() => {
+                    onCustomTitleChange(detectedInfo.title.substring(0, 50));
+                    onShowToast('Título asignado para Roblox', 'info');
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 transition-all flex-shrink-0"
+                  title="Usar el título de esta canción como nombre en Roblox"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-blue-400" />
+                  <span>Usar nombre</span>
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* Embedded Video Preview Player */}
+          {showVideoPlayer && (detectedInfo.embedUrl || detectedInfo.videoId) && (
+            <div className="rounded-xl overflow-hidden border border-slate-800 bg-black aspect-video w-full max-h-64 shadow-lg animate-fadeIn">
+              <iframe
+                src={detectedInfo.embedUrl || `https://www.youtube-nocookie.com/embed/${detectedInfo.videoId}?autoplay=0`}
+                title={detectedInfo.title || 'Video preview'}
+                className="w-full h-full"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+              />
+            </div>
+          )}
 
           {/* DUAL MODE AUDIO PLAYER: [Original] vs [Con Efectos] */}
           <div className="space-y-3">

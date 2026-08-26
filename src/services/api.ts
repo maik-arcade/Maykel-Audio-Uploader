@@ -720,14 +720,24 @@ export async function startUploadJob(formData: FormData): Promise<string> {
   }
 
   // Netlify direct client upload to Roblox Open Cloud
-  const creatorType = formData.get('creatorType') as string || 'User';
-  let creatorId = (formData.get('creatorId') as string || '').trim();
-  const apiKey = (formData.get('apiKey') as string || '').trim();
-  const displayName = (formData.get('displayName') as string || 'MAYKEL Audio').trim();
-  const audioFile = formData.get('audioFile') as File;
+  const creatorType = (formData.get('creatorType') as string) || 'User';
+  let creatorId = ((formData.get('creatorId') as string) || '').trim();
+  const apiKey = ((formData.get('apiKey') as string) || '').trim();
+  const displayName = ((formData.get('displayName') as string) || 'MAYKEL Audio').trim();
+  const audioFile = formData.get('audioFile') as File | null;
+  const youtubeUrl = ((formData.get('youtubeUrl') as string) || '').trim();
 
   if (!apiKey) throw new Error('Debes ingresar tu clave API de Roblox Open Cloud.');
-  if (!audioFile) throw new Error('No se seleccionó ningún archivo de audio.');
+
+  if (!audioFile) {
+    if (youtubeUrl) {
+      throw new Error(
+        'Para procesar y subir audios desde enlaces de YouTube o SoundCloud, la aplicación requiere el servidor backend activo.\n\n' +
+        '💡 Alternativa rápida: Descarga el archivo de audio (.mp3 o .wav) a tu dispositivo y arrástralo en "Archivo local". ¡El sistema lo modificará con tus efectos y lo subirá a Roblox inmediatamente!'
+      );
+    }
+    throw new Error('No se seleccionó ningún archivo de audio ni enlace válido.');
+  }
 
   // Clean creator ID
   if (creatorType === 'User' && !/^\d+$/.test(creatorId)) {
@@ -949,24 +959,28 @@ export function subscribeToJobEvents(
 }
 
 export async function requestAudioPreview(formData: FormData): Promise<string> {
-  const audioFile = formData.get('audioFile') as File;
+  const mode = (formData.get('mode') as string) || 'processed';
+  const audioFile = formData.get('audioFile') as File | null;
+
+  try {
+    const res = await fetch('/api/preview-audio', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: formData,
+    });
+
+    if (res.ok) {
+      const blob = await res.blob();
+      return URL.createObjectURL(blob);
+    }
+  } catch {}
+
+  // Fallback for local files if server is offline
   if (audioFile) {
     return URL.createObjectURL(audioFile);
   }
 
-  const res = await fetch('/api/preview-audio', {
-    method: 'POST',
-    headers: getAuthHeaders(),
-    body: formData,
-  });
-
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.message || errorData.error || 'Error al generar la vista previa del audio.');
-  }
-
-  const blob = await res.blob();
-  return URL.createObjectURL(blob);
+  throw new Error('No se pudo generar la vista previa del audio en este momento.');
 }
 
 export async function checkRobloxModeration(params: {
@@ -1004,19 +1018,110 @@ export async function checkRobloxModeration(params: {
 }
 
 export async function fetchAudioInfo(url: string): Promise<AudioInfo> {
-  const res = await fetch('/api/audio-info', {
-    method: 'POST',
-    headers: getAuthHeaders({
-      'Content-Type': 'application/json',
-    }),
-    body: JSON.stringify({ url }),
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.message || data.error || 'No se pudo obtener información del audio');
+  const cleanUrl = (url || '').trim();
+  if (!cleanUrl) {
+    throw new Error('URL requerida');
   }
-  return data;
+
+  // 1. Try server backend with yt-dlp & FFmpeg
+  try {
+    const res = await fetchWithTimeout('/api/audio-info', {
+      method: 'POST',
+      headers: getAuthHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify({ url: cleanUrl }),
+    }, 6000);
+
+    const contentType = res.headers.get('content-type') || '';
+    if (res.ok && contentType.includes('application/json')) {
+      const data = await res.json();
+      if (data && data.title) {
+        return data;
+      }
+    }
+  } catch {}
+
+  // 2. Client-side fallback for YouTube (oEmbed & thumbnail extraction)
+  const ytMatch = cleanUrl.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
+  if (ytMatch && ytMatch[1]) {
+    const videoId = ytMatch[1];
+    const defaultThumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+    const embedUrl = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=0`;
+
+    let title = 'Canción de YouTube';
+    let author = 'YouTube';
+
+    try {
+      const oembedRes = await fetchWithTimeout(
+        `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+        {},
+        3000
+      );
+      if (oembedRes.ok) {
+        const oembedData = await oembedRes.json();
+        if (oembedData.title) title = oembedData.title;
+        if (oembedData.author_name) author = oembedData.author_name;
+      }
+    } catch {}
+
+    return {
+      title,
+      artist: author,
+      source: 'youtube',
+      originalUrl: cleanUrl,
+      thumbnail: defaultThumbnail,
+      videoId,
+      embedUrl,
+    };
+  }
+
+  // 3. Client-side fallback for SoundCloud
+  if (/soundcloud\.com/i.test(cleanUrl)) {
+    try {
+      const scRes = await fetchWithTimeout(
+        `https://soundcloud.com/oembed?url=${encodeURIComponent(cleanUrl)}&format=json`,
+        {},
+        3000
+      );
+      if (scRes.ok) {
+        const scData = await scRes.json();
+        return {
+          title: scData.title || 'Canción de SoundCloud',
+          artist: scData.author_name || 'SoundCloud',
+          thumbnail: scData.thumbnail_url || undefined,
+          source: 'soundcloud',
+          originalUrl: cleanUrl,
+        };
+      }
+    } catch {}
+
+    return {
+      title: 'Canción de SoundCloud',
+      artist: 'SoundCloud',
+      source: 'soundcloud',
+      originalUrl: cleanUrl,
+    };
+  }
+
+  // 4. Direct audio URL fallback
+  try {
+    const parsed = new URL(cleanUrl.startsWith('http') ? cleanUrl : `https://${cleanUrl}`);
+    const filename = decodeURIComponent(parsed.pathname.split('/').pop() || 'Audio Directo');
+    const cleanTitle = filename.replace(/\.[^/.]+$/, '');
+    return {
+      title: cleanTitle || 'Audio Directo',
+      artist: parsed.hostname || 'Enlace Directo',
+      source: 'direct',
+      originalUrl: cleanUrl,
+    };
+  } catch {
+    return {
+      title: 'Audio Directo',
+      source: 'direct',
+      originalUrl: cleanUrl,
+    };
+  }
 }
 
 

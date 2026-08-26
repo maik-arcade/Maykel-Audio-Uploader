@@ -42,6 +42,8 @@ export interface AudioInfo {
   thumbnail?: string;
   source?: 'youtube' | 'soundcloud' | 'direct' | 'file';
   originalUrl?: string;
+  videoId?: string;
+  embedUrl?: string;
 }
 
 export interface VerifyAccountResponse {
