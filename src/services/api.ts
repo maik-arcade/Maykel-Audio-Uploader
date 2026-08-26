@@ -50,7 +50,14 @@ export function removeAuthToken(): void {
 function getStoredUser(): RobloxAuthUser | null {
   try {
     const raw = localStorage.getItem(AUTH_USER_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Invalidate broken placeholder caches
+    if (!parsed || !parsed.username || parsed.username.startsWith('Usuario_') || (parsed.displayName && parsed.displayName.startsWith('Roblox User ('))) {
+      localStorage.removeItem(AUTH_USER_KEY);
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -97,7 +104,7 @@ function getAuthHeaders(extraHeaders: Record<string, string> = {}): Record<strin
 async function fetchWithTimeout(
   url: string,
   options: RequestInit = {},
-  timeoutMs: number = 2200
+  timeoutMs: number = 2500
 ): Promise<Response> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -111,11 +118,17 @@ async function fetchWithTimeout(
   }
 }
 
-// User Cache Helpers for instant zero-latency re-verification
+// User Cache Helpers with sanity check
 function getUserFromCache(key: string): RobloxAuthUser | null {
   try {
     const raw = localStorage.getItem(`roblox_user_cache_${key.toLowerCase()}`);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const parsed: RobloxAuthUser = JSON.parse(raw);
+    if (!parsed || !parsed.username || parsed.username.startsWith('Usuario_') || (parsed.displayName && parsed.displayName.startsWith('Roblox User ('))) {
+      localStorage.removeItem(`roblox_user_cache_${key.toLowerCase()}`);
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -123,6 +136,9 @@ function getUserFromCache(key: string): RobloxAuthUser | null {
 
 function saveUserToCache(key: string, user: RobloxAuthUser): void {
   try {
+    if (!user || user.username.startsWith('Usuario_') || user.displayName.startsWith('Roblox User (')) {
+      return;
+    }
     localStorage.setItem(`roblox_user_cache_${key.toLowerCase()}`, JSON.stringify(user));
     if (user.id) {
       localStorage.setItem(`roblox_user_cache_${user.id}`, JSON.stringify(user));
@@ -133,59 +149,79 @@ function saveUserToCache(key: string, user: RobloxAuthUser): void {
   } catch {}
 }
 
-// Ultra-fast resilient CORS-enabled fetcher for Netlify / Static hosting with strict timeout
-async function fetchRobloxProxy(targetUrl: string, options: RequestInit = {}): Promise<any> {
+// Universal fetcher for Roblox APIs: Tries Netlify / Express reverse proxy first, then direct, then CORS proxies
+async function fetchRobloxApi(service: 'users' | 'groups' | 'thumbnails', subpath: string, options: RequestInit = {}): Promise<any> {
   const isPost = options.method === 'POST';
+  const cleanSubpath = subpath.startsWith('/') ? subpath : `/${subpath}`;
 
-  // 1. Try Direct with short timeout
+  // 1. Try local/Netlify reverse proxy route (0 CORS issues on Netlify or custom server)
+  const proxyEndpoint = `/roblox-api-${service}${cleanSubpath}`;
   try {
-    const res = await fetchWithTimeout(targetUrl, {
+    const res = await fetchWithTimeout(proxyEndpoint, {
       ...options,
       headers: {
         Accept: 'application/json',
+        ...(isPost ? { 'Content-Type': 'application/json' } : {}),
         ...(options.headers || {}),
       },
-    }, 1800);
+    }, 3000);
     if (res.ok) {
       return await res.json();
     }
   } catch {}
 
-  // 2. Fast CORS proxy #1
+  const fullRobloxUrl = `https://${service}.roblox.com${cleanSubpath}`;
+
+  // 2. Try Direct with short timeout
   try {
-    const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`;
-    const res = await fetchWithTimeout(proxyUrl, options, 2200);
+    const res = await fetchWithTimeout(fullRobloxUrl, {
+      ...options,
+      headers: {
+        Accept: 'application/json',
+        ...(isPost ? { 'Content-Type': 'application/json' } : {}),
+        ...(options.headers || {}),
+      },
+    }, 2000);
     if (res.ok) {
       return await res.json();
     }
   } catch {}
 
-  // 3. Fast CORS proxy #2 (for GET)
+  // 3. Try corsproxy.io
+  try {
+    const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(fullRobloxUrl)}`;
+    const res = await fetchWithTimeout(proxyUrl, options, 2500);
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch {}
+
+  // 4. Try allorigins for GET
   if (!isPost) {
     try {
-      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
-      const res = await fetchWithTimeout(proxyUrl, {}, 2000);
+      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(fullRobloxUrl)}`;
+      const res = await fetchWithTimeout(proxyUrl, {}, 2500);
       if (res.ok) {
         return await res.json();
       }
     } catch {}
   }
 
-  // 4. Fast CORS proxy #3 (for GET)
+  // 5. Try codetabs for GET
   if (!isPost) {
     try {
-      const proxyUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`;
-      const res = await fetchWithTimeout(proxyUrl, {}, 2000);
+      const proxyUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(fullRobloxUrl)}`;
+      const res = await fetchWithTimeout(proxyUrl, {}, 2500);
       if (res.ok) {
         return await res.json();
       }
     } catch {}
   }
 
-  throw new Error('No se pudo conectar con los servicios de Roblox');
+  throw new Error(`No se pudo conectar con Roblox (${service})`);
 }
 
-// Client-side Roblox User Resolver (Instant for IDs, fast for names)
+// Client-side Roblox User Resolver (Real info & verified avatars)
 async function clientResolveRobloxUser(input: string): Promise<RobloxAuthUser | null> {
   let clean = (input || '').toString().trim();
   if (!clean) return null;
@@ -200,7 +236,7 @@ async function clientResolveRobloxUser(input: string): Promise<RobloxAuthUser | 
   clean = clean.replace(/^[@"']+|[@"']+$/g, '').trim();
   if (!clean) return null;
 
-  // Check memory / localStorage cache first (0ms latency)
+  // Check cache first
   const cached = getUserFromCache(clean);
   if (cached) {
     return cached;
@@ -211,65 +247,51 @@ async function clientResolveRobloxUser(input: string): Promise<RobloxAuthUser | 
     return storedUser;
   }
 
-  // Fast numeric ID path: Instant valid profile construction
-  if (/^\d+$/.test(clean)) {
-    const defaultAvatarUrl = `https://www.roblox.com/headshot-thumbnail/image?userId=${clean}&width=150&height=150&format=png`;
-    let userObj: RobloxAuthUser = {
-      id: clean,
-      username: `Usuario_${clean}`,
-      displayName: `Roblox User (${clean})`,
-      avatarUrl: defaultAvatarUrl,
-      isVerified: false,
-    };
-
-    // Attempt fast 1.5s background detail enrichment
-    try {
-      const data = await fetchRobloxProxy(`https://users.roblox.com/v1/users/${clean}`);
-      if (data && data.id) {
-        userObj = {
-          id: data.id.toString(),
-          username: data.name || userObj.username,
-          displayName: data.displayName || data.name || userObj.displayName,
-          avatarUrl: defaultAvatarUrl,
-          isVerified: !!data.hasVerifiedBadge,
-        };
-      }
-    } catch {
-      // Return instant default profile on timeout or offline
-    }
-
-    saveUserToCache(clean, userObj);
-    return userObj;
-  }
-
   let foundUser: { id: string; name: string; displayName: string; isVerified: boolean } | null = null;
 
-  // Username match via POST
-  const validUsernameCandidate = clean.replace(/[^a-zA-Z0-9_]/g, '');
-  if (validUsernameCandidate.length >= 3) {
+  // Path A: Numeric User ID (e.g. 8849207993)
+  if (/^\d+$/.test(clean)) {
     try {
-      const data = await fetchRobloxProxy('https://users.roblox.com/v1/usernames/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ usernames: [validUsernameCandidate], excludeBannedUsers: false }),
-      });
-      if (data?.data && data.data.length > 0) {
-        const u = data.data[0];
+      const data = await fetchRobloxApi('users', `/v1/users/${clean}`);
+      if (data && (data.id || data.name)) {
         foundUser = {
-          id: u.id.toString(),
-          name: u.name,
-          displayName: u.displayName || u.name,
-          isVerified: !!u.hasVerifiedBadge,
+          id: (data.id || clean).toString(),
+          name: data.name || clean,
+          displayName: data.displayName || data.name || clean,
+          isVerified: !!data.hasVerifiedBadge,
         };
       }
     } catch {}
   }
 
-  // Search keyword (supports Display Names like XxSL_MAYKELxX)
+  // Path B: Username match via POST
+  if (!foundUser) {
+    const validUsernameCandidate = clean.replace(/[^a-zA-Z0-9_]/g, '');
+    if (validUsernameCandidate.length >= 3) {
+      try {
+        const data = await fetchRobloxApi('users', '/v1/usernames/users', {
+          method: 'POST',
+          body: JSON.stringify({ usernames: [validUsernameCandidate], excludeBannedUsers: false }),
+        });
+        if (data?.data && data.data.length > 0) {
+          const u = data.data[0];
+          foundUser = {
+            id: u.id.toString(),
+            name: u.name,
+            displayName: u.displayName || u.name,
+            isVerified: !!u.hasVerifiedBadge,
+          };
+        }
+      } catch {}
+    }
+  }
+
+  // Path C: Search keyword (supports Display Names)
   if (!foundUser) {
     try {
-      const data = await fetchRobloxProxy(
-        `https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(clean)}&limit=10`
+      const data = await fetchRobloxApi(
+        'users',
+        `/v1/users/search?keyword=${encodeURIComponent(clean)}&limit=10`
       );
       const list = data?.data || [];
       if (list.length > 0) {
@@ -291,11 +313,23 @@ async function clientResolveRobloxUser(input: string): Promise<RobloxAuthUser | 
 
   if (!foundUser) return null;
 
+  // Resolve Real Avatar Headshot Thumbnail
+  let avatarUrl = `https://www.roblox.com/headshot-thumbnail/image?userId=${foundUser.id}&width=150&height=150&format=png`;
+  try {
+    const thumbData = await fetchRobloxApi(
+      'thumbnails',
+      `/v1/users/avatar-headshot?userIds=${foundUser.id}&size=150x150&format=Png&isCircular=false`
+    );
+    if (thumbData?.data?.[0]?.imageUrl) {
+      avatarUrl = thumbData.data[0].imageUrl;
+    }
+  } catch {}
+
   const finalUser: RobloxAuthUser = {
     id: foundUser.id,
     username: foundUser.name,
     displayName: foundUser.displayName,
-    avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${foundUser.id}&width=150&height=150&format=png`,
+    avatarUrl,
     isVerified: foundUser.isVerified,
   };
 
@@ -303,13 +337,13 @@ async function clientResolveRobloxUser(input: string): Promise<RobloxAuthUser | 
   return finalUser;
 }
 
-// Client-side Group Membership Checker with fast timeout
+// Client-side Group Membership Checker (Strict verification: only true if verified by Roblox)
 async function clientCheckGroupMembership(
   userId: string,
   groupId: string = '52917562'
 ): Promise<{ isMember: boolean; role?: RobloxGroupRole | null }> {
   try {
-    const data = await fetchRobloxProxy(`https://groups.roblox.com/v2/users/${userId}/groups/roles`);
+    const data = await fetchRobloxApi('groups', `/v2/users/${userId}/groups/roles`);
     if (data?.data && Array.isArray(data.data)) {
       const match = data.data.find(
         (item: any) => item?.group?.id?.toString() === groupId.toString()
@@ -324,12 +358,13 @@ async function clientCheckGroupMembership(
           },
         };
       }
+      // User is confirmed NOT to be in this group
+      return { isMember: false, role: null };
     }
-    // If user has verified or logged in with this ID, grant access on static hosting fallback
-    return { isMember: true, role: { id: 1, name: 'Miembro', rank: 1 } };
+    return { isMember: false, role: null };
   } catch {
-    // Graceful fallback for browser CORS restrictions on Netlify
-    return { isMember: true, role: { id: 1, name: 'Miembro', rank: 1 } };
+    // Security first: if Roblox group API cannot be queried, do NOT grant access
+    return { isMember: false, role: null };
   }
 }
 
@@ -558,24 +593,14 @@ export async function verifyRobloxAccount(
     }
   } catch {}
 
-  // Netlify Client Fallback (Instant non-blocking)
+  // Netlify Client Fallback
   let cleanId = creatorId.toString().trim();
   if (creatorType === 'User') {
     const resolved = await clientResolveRobloxUser(cleanId);
     if (!resolved) {
-      const numericMatch = cleanId.match(/\d+/);
-      const fallbackId = numericMatch ? numericMatch[0] : cleanId;
       return {
-        success: true,
-        profile: {
-          id: fallbackId,
-          name: `Usuario ${fallbackId}`,
-          displayName: `Roblox User (${fallbackId})`,
-          avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${fallbackId}&width=150&height=150&format=png`,
-          creatorType: 'User',
-          description: '',
-          isVerified: false,
-        },
+        success: false,
+        error: `No se pudo encontrar la cuenta de Roblox "${cleanId}". Verifica tu nombre de usuario o ID.`,
       };
     }
     return {

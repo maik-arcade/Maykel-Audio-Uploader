@@ -3,6 +3,24 @@
   publish = "dist"
 
 [[redirects]]
+  from = "/roblox-api-users/*"
+  to = "https://users.roblox.com/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/roblox-api-groups/*"
+  to = "https://groups.roblox.com/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/roblox-api-thumbnails/*"
+  to = "https://thumbnails.roblox.com/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200

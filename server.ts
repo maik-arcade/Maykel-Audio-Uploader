@@ -130,6 +130,63 @@ const upload = multer({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Roblox API Reverse Proxies (for dev / container & Netlify parity)
+app.all('/roblox-api-users/*', async (req, res) => {
+  try {
+    const subpath = req.url.replace('/roblox-api-users', '');
+    const robloxUrl = `https://users.roblox.com${subpath}`;
+    const response = await axios({
+      method: req.method as any,
+      url: robloxUrl,
+      data: req.body,
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      validateStatus: () => true,
+    });
+    res.status(response.status).json(response.data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.all('/roblox-api-groups/*', async (req, res) => {
+  try {
+    const subpath = req.url.replace('/roblox-api-groups', '');
+    const robloxUrl = `https://groups.roblox.com${subpath}`;
+    const response = await axios({
+      method: req.method as any,
+      url: robloxUrl,
+      data: req.body,
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      validateStatus: () => true,
+    });
+    res.status(response.status).json(response.data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.all('/roblox-api-thumbnails/*', async (req, res) => {
+  try {
+    const subpath = req.url.replace('/roblox-api-thumbnails', '');
+    const robloxUrl = `https://thumbnails.roblox.com${subpath}`;
+    const response = await axios({
+      method: req.method as any,
+      url: robloxUrl,
+      headers: { Accept: 'application/json' },
+      validateStatus: () => true,
+    });
+    res.status(response.status).json(response.data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Helper: load history
 function loadHistory(): UploadHistoryItem[] {
   try {
