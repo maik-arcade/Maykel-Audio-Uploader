@@ -41,19 +41,26 @@ const SESSION_SECRET = process.env.ROBLOX_AUTH_SECRET || 'maykel_uploader_secure
 
 // Centralized Roblox Group Configuration
 const DEFAULT_GROUP_CONFIG: RobloxGroupConfig = {
-  groupId: '35083161',
-  groupName: 'MAYKEL Official Community',
-  groupUrl: 'https://www.roblox.com/groups/35083161',
+  groupId: '52917562',
+  groupName: "Maykel's Studio",
+  groupUrl: 'https://www.roblox.com/share/g/52917562',
   groupIconUrl: '',
-  memberCount: 0,
-  description: 'Grupo oficial de Roblox para usuarios de MAYKEL Audio Uploader.',
+  memberCount: 1,
+  description: '🎮 Welcome to Maykel’s Studio! 🎮',
 };
 
 function loadGroupConfig(): RobloxGroupConfig {
   try {
     if (fs.existsSync(GROUP_CONFIG_FILE)) {
       const data = fs.readFileSync(GROUP_CONFIG_FILE, 'utf-8');
-      return { ...DEFAULT_GROUP_CONFIG, ...JSON.parse(data) };
+      const parsed = JSON.parse(data);
+      // Migrate old default group if detected
+      if (parsed.groupId === '35083161') {
+        parsed.groupId = '52917562';
+        parsed.groupUrl = 'https://www.roblox.com/share/g/52917562';
+        parsed.groupName = "Maykel's Studio";
+      }
+      return { ...DEFAULT_GROUP_CONFIG, ...parsed };
     }
   } catch (err) {
     console.error('Error loading group config:', err);
@@ -451,9 +458,19 @@ async function fetchRobloxGroupDetails(
   }
 }
 
-// Helper: Resolve Roblox User from Username or User ID
-async function resolveRobloxUser(usernameOrId: string): Promise<RobloxAuthUser | null> {
-  const cleanInput = (usernameOrId || '').trim().replace(/^@/, '');
+// Helper: Resolve Roblox User from Username, Display Name, User ID, or Profile URL
+async function resolveRobloxUser(usernameOrIdOrUrl: string): Promise<RobloxAuthUser | null> {
+  let cleanInput = (usernameOrIdOrUrl || '').toString().trim();
+  if (!cleanInput) return null;
+
+  // 1. If user pasted a Roblox Profile URL or Group URL, extract the numeric ID
+  const urlUserMatch = cleanInput.match(/roblox\.com\/users\/(\d+)/i);
+  if (urlUserMatch) {
+    cleanInput = urlUserMatch[1];
+  }
+
+  // 2. Remove leading @ or quotes
+  cleanInput = cleanInput.replace(/^[@"']+|[@"']+$/g, '').trim();
   if (!cleanInput) return null;
 
   const isNumeric = /^\d+$/.test(cleanInput);
@@ -466,6 +483,10 @@ async function resolveRobloxUser(usernameOrId: string): Promise<RobloxAuthUser |
     try {
       const userRes = await axios.get(`https://users.roblox.com/v1/users/${cleanInput}`, {
         timeout: 9000,
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)',
+        },
       });
       userId = userRes.data.id.toString();
       name = userRes.data.name;
@@ -473,29 +494,68 @@ async function resolveRobloxUser(usernameOrId: string): Promise<RobloxAuthUser |
       isVerified = !!userRes.data.hasVerifiedBadge;
     } catch (err: any) {
       if (err.response?.status === 404) return null;
-      throw new Error(`Usuario con ID ${cleanInput} no encontrado en Roblox.`);
+      throw new Error(`No se encontró un usuario con el ID ${cleanInput} en Roblox.`);
     }
   } else {
-    try {
-      const searchRes = await axios.post(
-        'https://users.roblox.com/v1/usernames/users',
-        { usernames: [cleanInput], excludeBannedUsers: false },
-        {
-          timeout: 9000,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
-      const userObj = searchRes.data?.data?.[0];
-      if (!userObj) {
-        return null;
+    // Clean username for Roblox standard username format (alphanumeric and underscore)
+    const validUsernameCandidate = cleanInput.replace(/[^a-zA-Z0-9_]/g, '');
+
+    // Step A: Attempt exact username lookup via Roblox API
+    let foundUser: any = null;
+    if (validUsernameCandidate.length >= 3) {
+      try {
+        const searchRes = await axios.post(
+          'https://users.roblox.com/v1/usernames/users',
+          { usernames: [validUsernameCandidate], excludeBannedUsers: false },
+          {
+            timeout: 9000,
+            headers: {
+              'Content-Type': 'application/json',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)',
+            },
+          }
+        );
+        foundUser = searchRes.data?.data?.[0];
+      } catch (err: any) {
+        // If Roblox returns pattern error or bad request, catch and proceed to search fallback
+        console.warn('Username direct match error:', err.response?.data || err.message);
       }
-      userId = userObj.id.toString();
-      name = userObj.name;
-      displayName = userObj.displayName || name;
-      isVerified = !!userObj.hasVerifiedBadge;
-    } catch (err: any) {
-      throw new Error(`Error al buscar usuario "${cleanInput}" en Roblox: ${err.message}`);
     }
+
+    // Step B: Fallback to keyword search (supports Display Names like XxSL_MAYKELxX)
+    if (!foundUser) {
+      try {
+        const searchRes = await axios.get('https://users.roblox.com/v1/users/search', {
+          params: { keyword: cleanInput, limit: 10 },
+          timeout: 9000,
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)',
+          },
+        });
+        const usersList: any[] = searchRes.data?.data || [];
+        if (usersList.length > 0) {
+          // Find exact match by username or display name (case insensitive)
+          const exact = usersList.find(
+            (u) =>
+              (u.name && u.name.toLowerCase() === cleanInput.toLowerCase()) ||
+              (u.displayName && u.displayName.toLowerCase() === cleanInput.toLowerCase())
+          );
+          foundUser = exact || usersList[0];
+        }
+      } catch (err: any) {
+        console.warn('User search fallback warning:', err.response?.data || err.message);
+      }
+    }
+
+    if (!foundUser) {
+      return null;
+    }
+
+    userId = foundUser.id.toString();
+    name = foundUser.name;
+    displayName = foundUser.displayName || name;
+    isVerified = !!foundUser.hasVerifiedBadge;
   }
 
   // Fetch avatar headshot
@@ -503,7 +563,12 @@ async function resolveRobloxUser(usernameOrId: string): Promise<RobloxAuthUser |
   try {
     const thumbRes = await axios.get(
       `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=150x150&format=Png&isCircular=false`,
-      { timeout: 8000 }
+      {
+        timeout: 8000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)',
+        },
+      }
     );
     if (thumbRes.data?.data?.[0]?.imageUrl) {
       avatarUrl = thumbRes.data.data[0].imageUrl;
@@ -913,11 +978,33 @@ app.post('/api/roblox/verify', async (req, res) => {
       });
     }
 
-    const cleanId = creatorId.toString().trim().replace(/[^\d]/g, '');
+    let cleanId = creatorId.toString().trim();
+    if (creatorType === 'User') {
+      // If not pure numeric, resolve via resolveRobloxUser
+      if (!/^\d+$/.test(cleanId) || cleanId.includes('roblox.com') || cleanId.startsWith('@')) {
+        const resolved = await resolveRobloxUser(cleanId);
+        if (!resolved) {
+          return res.status(404).json({
+            success: false,
+            error: `No se encontró la cuenta de Roblox "${cleanId}". Ingresa tu nombre de usuario o User ID numérico.`,
+          });
+        }
+        cleanId = resolved.id;
+      }
+    } else {
+      // Group: extract numeric from URL if pasted
+      const groupMatch = cleanId.match(/roblox\.com\/(?:groups|share\/g)\/(\d+)/i);
+      if (groupMatch) {
+        cleanId = groupMatch[1];
+      } else {
+        cleanId = cleanId.replace(/[^\d]/g, '');
+      }
+    }
+
     if (!cleanId) {
       return res.status(400).json({
         success: false,
-        error: 'El ID de creador debe ser numérico.',
+        error: `El ${creatorType === 'User' ? 'User ID' : 'Group ID'} debe ser numérico o un nombre de usuario válido.`,
       });
     }
 
@@ -1580,10 +1667,17 @@ app.post('/api/upload', requireGroupMember, upload.single('audioFile'), async (r
           .substring(0, 48);
 
         const cleanDisplayName = sanitizedTitle.length > 0 ? sanitizedTitle : 'MAYKEL Audio';
-        const cleanCreatorId = creatorId.toString().replace(/[^\d]/g, '').trim();
+        let cleanCreatorId = creatorId.toString().trim();
+        if (!/^\d+$/.test(cleanCreatorId)) {
+          const resolved = await resolveRobloxUser(cleanCreatorId);
+          if (resolved) {
+            cleanCreatorId = resolved.id;
+          }
+        }
+        cleanCreatorId = cleanCreatorId.replace(/[^\d]/g, '').trim();
 
         if (!cleanCreatorId) {
-          throw new Error('El ID de creador de Roblox debe ser numérico.');
+          throw new Error('El ID de creador de Roblox no es válido o no pudo resolverse.');
         }
 
         const creationCreator: any = {};

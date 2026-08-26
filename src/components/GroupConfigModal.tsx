@@ -148,17 +148,23 @@ export const GroupConfigModal: React.FC<GroupConfigModalProps> = ({
               value={groupId}
               onChange={(e) => {
                 const val = e.target.value;
-                setGroupId(val);
-                if (/^\d+$/.test(val.trim())) {
-                  setGroupUrl(`https://www.roblox.com/groups/${val.trim()}`);
+                const match = val.match(/roblox\.com\/(?:groups|share\/g)\/(\d+)/i);
+                if (match) {
+                  setGroupId(match[1]);
+                  setGroupUrl(`https://www.roblox.com/share/g/${match[1]}`);
+                } else {
+                  setGroupId(val);
+                  if (/^\d+$/.test(val.trim())) {
+                    setGroupUrl(`https://www.roblox.com/share/g/${val.trim()}`);
+                  }
                 }
               }}
-              placeholder="Ej: 35083161"
+              placeholder="Ej: 52917562 o pega el enlace del grupo"
               required
               className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700/80 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all font-mono"
             />
             <p className="text-[11px] text-slate-400 mt-1">
-              Es el número identificador del grupo que aparece en el enlace de roblox.com/groups/<strong>ID</strong>
+              Pega el ID numérico o el enlace completo del grupo (ej: https://www.roblox.com/share/g/52917562)
             </p>
           </div>
 
@@ -171,7 +177,7 @@ export const GroupConfigModal: React.FC<GroupConfigModalProps> = ({
               type="text"
               value={groupName}
               onChange={(e) => setGroupName(e.target.value)}
-              placeholder="Ej: MAYKEL Official Community"
+              placeholder="Ej: Maykel's Studio"
               className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700/80 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
             />
           </div>
@@ -185,7 +191,7 @@ export const GroupConfigModal: React.FC<GroupConfigModalProps> = ({
               type="url"
               value={groupUrl}
               onChange={(e) => setGroupUrl(e.target.value)}
-              placeholder="https://www.roblox.com/groups/35083161"
+              placeholder="https://www.roblox.com/share/g/52917562"
               className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700/80 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all font-mono text-xs"
             />
           </div>

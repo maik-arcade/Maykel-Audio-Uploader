@@ -320,12 +320,17 @@ export const RobloxAccountCard: React.FC<RobloxAccountCardProps> = ({
               <input
                 type="text"
                 id="creator-id-input"
-                inputMode="numeric"
-                placeholder={creatorType === 'User' ? 'Ejemplo: 123456789' : 'Ejemplo: 987654321'}
+                placeholder={creatorType === 'User' ? 'Ej: 5112225927 o tu usuario / enlace' : 'Ej: 52917562 o enlace del grupo'}
                 value={creatorId}
                 onChange={(e) => {
-                  const val = e.target.value.replace(/[^\d]/g, '');
-                  onCreatorIdChange(val);
+                  const raw = e.target.value;
+                  // If pasted URL, extract ID immediately for convenience
+                  const urlMatch = raw.match(/roblox\.com\/(?:users|groups|share\/g)\/(\d+)/i);
+                  if (urlMatch) {
+                    onCreatorIdChange(urlMatch[1]);
+                  } else {
+                    onCreatorIdChange(raw.trim());
+                  }
                 }}
                 className={`w-full pl-10 pr-4 py-2.5 bg-[#0A0E17] border rounded-xl text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all ${
                   errMap.creatorId ? 'border-rose-500/80 bg-rose-500/5' : 'border-slate-800 focus:border-blue-500'
@@ -336,7 +341,9 @@ export const RobloxAccountCard: React.FC<RobloxAccountCardProps> = ({
               <p className="text-[11px] text-rose-400 font-medium mt-1">{errMap.creatorId}</p>
             ) : (
               <p className="text-[11px] text-slate-500 mt-1">
-                Tu ID numérico de {creatorType === 'User' ? 'usuario en roblox.com/users/{id}' : 'grupo en roblox.com/groups/{id}'}
+                {creatorType === 'User' 
+                  ? 'Ingresa tu User ID numérico, tu nombre de usuario o pega tu enlace de perfil.' 
+                  : 'Ingresa el Group ID numérico o pega el enlace del grupo.'}
               </p>
             )}
           </div>

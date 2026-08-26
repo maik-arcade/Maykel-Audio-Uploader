@@ -43,9 +43,9 @@ const STORAGE_KEYS = {
 };
 
 const DEFAULT_GROUP_CONFIG: RobloxGroupConfig = {
-  groupId: '35083161',
-  groupName: 'MAYKEL Official Community',
-  groupUrl: 'https://www.roblox.com/groups/35083161',
+  groupId: '52917562',
+  groupName: "Maykel's Studio",
+  groupUrl: 'https://www.roblox.com/share/g/52917562',
 };
 
 export default function App() {
