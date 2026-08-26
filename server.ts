@@ -1357,7 +1357,7 @@ app.post('/api/roblox/check-moderation', requireGroupMember, async (req, res) =>
 });
 
 // Fetch Audio Info from link (YouTube, SoundCloud, direct audio URLs)
-app.post('/api/audio-info', requireGroupMember, async (req, res) => {
+app.post('/api/audio-info', async (req, res) => {
   try {
     const { url } = req.body;
     if (!url || typeof url !== 'string' || !url.trim()) {
@@ -1480,7 +1480,7 @@ app.post('/api/audio-info', requireGroupMember, async (req, res) => {
 });
 
 // Audio Preview endpoint (processes and streams MP3 directly to browser)
-app.post('/api/preview-audio', requireGroupMember, upload.single('audioFile'), async (req, res) => {
+app.post('/api/preview-audio', upload.single('audioFile'), async (req, res) => {
   const tempFiles: string[] = [];
   try {
     const ffmpegOk = await checkFFmpeg();
@@ -1505,7 +1505,7 @@ app.post('/api/preview-audio', requireGroupMember, upload.single('audioFile'), a
       await downloadYouTubeAudio(youtubeUrl.trim(), ytTempPath);
       inputPath = ytTempPath;
     } else {
-      return res.status(400).json({ error: 'Data incomplete: No se proporcionó audio ni enlace de YouTube.' });
+      return res.status(400).json({ error: 'No se proporcionó archivo de audio ni enlace válido.' });
     }
 
     const outputPreviewPath = path.join(TEMP_DIR, `preview_${Date.now()}_${Math.random().toString(36).substring(7)}.mp3`);
@@ -1519,12 +1519,20 @@ app.post('/api/preview-audio', requireGroupMember, upload.single('audioFile'), a
       maxDuration: Math.min(maxDurNum, 120), // preview allows up to 120s of playback
     });
 
+    if (!fs.existsSync(outputPreviewPath)) {
+      throw new Error('El archivo de preescucha no se generó correctamente.');
+    }
+
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Content-Disposition', 'inline; filename="preview.mp3"');
+    res.setHeader('Cache-Control', 'no-cache');
     const readStream = fs.createReadStream(outputPreviewPath);
     readStream.pipe(res);
 
-    readStream.on('close', () => {
+    res.on('finish', () => {
+      cleanupFiles(tempFiles);
+    });
+    res.on('close', () => {
       cleanupFiles(tempFiles);
     });
     readStream.on('error', () => {
@@ -1532,7 +1540,8 @@ app.post('/api/preview-audio', requireGroupMember, upload.single('audioFile'), a
     });
   } catch (err: any) {
     cleanupFiles(tempFiles);
-    res.status(500).json({ error: err.message || 'Error generando vista previa' });
+    console.error('Audio preview error:', err);
+    res.status(500).json({ error: err.message || 'Error generando vista previa de audio' });
   }
 });
 

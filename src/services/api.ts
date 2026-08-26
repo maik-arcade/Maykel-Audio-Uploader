@@ -973,14 +973,23 @@ export async function requestAudioPreview(formData: FormData): Promise<string> {
       const blob = await res.blob();
       return URL.createObjectURL(blob);
     }
-  } catch {}
 
-  // Fallback for local files if server is offline
-  if (audioFile) {
-    return URL.createObjectURL(audioFile);
+    // Try reading JSON error message if available
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const errData = await res.json().catch(() => ({}));
+      if (errData.message || errData.error) {
+        throw new Error(errData.message || errData.error);
+      }
+    }
+    throw new Error(`Error en el servidor (${res.status}) al procesar vista previa.`);
+  } catch (err: any) {
+    // If it's a local file and original mode, use direct client blob
+    if (audioFile && mode === 'original') {
+      return URL.createObjectURL(audioFile);
+    }
+    throw new Error(err.message || 'No se pudo generar la vista previa del audio en este momento.');
   }
-
-  throw new Error('No se pudo generar la vista previa del audio en este momento.');
 }
 
 export async function checkRobloxModeration(params: {
