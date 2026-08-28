@@ -921,7 +921,14 @@ export function subscribeToJobEvents(
   }
 
   try {
-    if (typeof EventSource !== 'undefined') {
+    const isOriginValid =
+      typeof window !== 'undefined' &&
+      window.location &&
+      typeof window.location.origin === 'string' &&
+      window.location.origin !== 'null' &&
+      window.location.origin.startsWith('http');
+
+    if (typeof EventSource !== 'undefined' && isOriginValid) {
       const sseUrl = `${window.location.origin}/api/jobs/${encodeURIComponent(jobId)}/events${
         token ? `?sessionToken=${encodeURIComponent(token)}` : ''
       }`;

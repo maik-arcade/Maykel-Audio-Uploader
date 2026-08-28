@@ -224,16 +224,26 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
   // Helper to load audio preview stream (Original vs Processed with Effects)
   const ensureAudioLoaded = async (mode: 'original' | 'effects'): Promise<string | null> => {
     if (mode === 'original') {
-      if (selectedFile && originalAudioUrl) {
+      if (selectedFile) {
+        if (!originalAudioUrl) {
+          const localUrl = URL.createObjectURL(selectedFile);
+          setOriginalAudioUrl(localUrl);
+          return localUrl;
+        }
         return originalAudioUrl;
       }
       if (originalAudioUrl) return originalAudioUrl;
+
+      if (!youtubeUrl || !youtubeUrl.trim()) {
+        onShowToast('Ingresa un enlace de audio o selecciona un archivo primero.', 'info');
+        return null;
+      }
 
       // Fetch original stream from server
       setIsAudioLoading(true);
       try {
         const formData = new FormData();
-        if (youtubeUrl) formData.append('youtubeUrl', youtubeUrl.trim());
+        formData.append('youtubeUrl', youtubeUrl.trim());
         formData.append('mode', 'original');
         formData.append('speed', '1.0');
         formData.append('amplification', '0');
@@ -252,6 +262,11 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
       // Processed with effects
       if (processedAudioUrl && processedSettingsKey === currentSettingsKey) {
         return processedAudioUrl;
+      }
+
+      if (!selectedFile && (!youtubeUrl || !youtubeUrl.trim())) {
+        onShowToast('Ingresa un enlace de audio o selecciona un archivo primero.', 'info');
+        return null;
       }
 
       setIsAudioLoading(true);

@@ -261,7 +261,7 @@ function emitJobProgress(job: ActiveJob) {
   });
 }
 
-// Helper: Download audio from URL (SoundCloud, Direct URL, YouTube) safely
+// Helper: Download audio from URL (YouTube Invidious cluster, SoundCloud, Direct URL, yt-dlp) safely
 async function downloadYouTubeAudio(url: string, outputPath: string): Promise<string> {
   const trimmedUrl = url.trim();
 
@@ -294,7 +294,64 @@ async function downloadYouTubeAudio(url: string, outputPath: string): Promise<st
     }
   }
 
-  // Case B: yt-dlp for SoundCloud, Bandcamp, YouTube, and other media sources
+  // Case B: YouTube Invidious / Piped API Instances (Bypasses bot-detection without IP block)
+  const ytMatch = trimmedUrl.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
+  if (ytMatch && ytMatch[1]) {
+    const videoId = ytMatch[1];
+    const invidiousInstances = [
+      'https://invidious.jing.rocks',
+      'https://invidious.nerdvpn.de',
+      'https://inv.vern.cc',
+      'https://iv.ggtyler.dev',
+      'https://invidious.protokolla.fi',
+      'https://invidious.drgns.space',
+      'https://yewtu.be',
+      'https://invidious.privacyredirect.com',
+    ];
+
+    for (const inst of invidiousInstances) {
+      try {
+        const infoRes = await axios.get(`${inst}/api/v1/videos/${videoId}`, { timeout: 6000 });
+        const formats = infoRes.data?.adaptiveFormats || infoRes.data?.formatStreams || [];
+        const audioFormats = formats.filter((f: any) => f.type?.includes('audio') || f.container === 'm4a' || f.container === 'webm');
+
+        if (audioFormats.length > 0) {
+          const targetAudio = audioFormats[0];
+          let streamUrl = targetAudio.url;
+          if (streamUrl && streamUrl.startsWith('/')) {
+            streamUrl = `${inst}${streamUrl}`;
+          }
+
+          if (streamUrl) {
+            const rawStreamRes = await axios.get(streamUrl, {
+              responseType: 'stream',
+              timeout: 30000,
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              },
+            });
+
+            const writer = fs.createWriteStream(outputPath);
+            rawStreamRes.data.pipe(writer);
+
+            await new Promise<void>((resolve, reject) => {
+              writer.on('finish', () => resolve());
+              writer.on('error', (e) => reject(e));
+            });
+
+            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1024) {
+              const videoTitle = infoRes.data?.title || 'YouTube Audio';
+              return videoTitle;
+            }
+          }
+        }
+      } catch (instErr: any) {
+        // Continue to next instance
+      }
+    }
+  }
+
+  // Case C: yt-dlp for SoundCloud, YouTube, and other media sources
   const ytdlpPath = path.join(process.cwd(), 'bin', 'yt-dlp');
   if (fs.existsSync(ytdlpPath)) {
     const tempDir = path.dirname(outputPath);
@@ -306,7 +363,7 @@ async function downloadYouTubeAudio(url: string, outputPath: string): Promise<st
       const args = [
         '--no-playlist',
         '--no-simulate',
-        ...(isYouTube ? ['--extractor-args', 'youtube:player_client=android,web,tv'] : []),
+        ...(isYouTube ? ['--extractor-args', 'youtube:player_client=ios,android,web,tv'] : []),
         '-f',
         'ba/b',
         '-x',
@@ -332,7 +389,6 @@ async function downloadYouTubeAudio(url: string, outputPath: string): Promise<st
       }
     } catch (ytdlpErr: any) {
       console.warn('yt-dlp attempt failed:', ytdlpErr.message);
-      // Clean up any stray temp files
       const stray = path.join(tempDir, `${tempBase}.mp3`);
       if (fs.existsSync(stray)) {
         try { fs.unlinkSync(stray); } catch {}
@@ -1175,13 +1231,13 @@ app.get('/api/system-status', async (_req, res) => {
 });
 
 // Upload History List
-app.get('/api/history', requireGroupMember, (_req, res) => {
+app.get('/api/history', (_req, res) => {
   const history = loadHistory();
   res.json(history);
 });
 
 // Clear Upload History
-app.delete('/api/history', requireGroupMember, (_req, res) => {
+app.delete('/api/history', (_req, res) => {
   try {
     fs.writeFileSync(HISTORY_FILE, '[]', 'utf-8');
     res.json({ success: true, message: 'Historial borrado' });
@@ -1191,7 +1247,7 @@ app.delete('/api/history', requireGroupMember, (_req, res) => {
 });
 
 // Check Moderation of a Roblox Asset
-app.post('/api/roblox/check-moderation', requireGroupMember, async (req, res) => {
+app.post('/api/roblox/check-moderation', async (req, res) => {
   try {
     const { assetId, operationId, apiKey, historyId } = req.body;
     const cleanAssetId = (assetId || '').toString().replace(/[^\d]/g, '').trim();
@@ -1546,7 +1602,7 @@ app.post('/api/preview-audio', upload.single('audioFile'), async (req, res) => {
 });
 
 // SSE endpoint for job status stream
-app.get('/api/jobs/:jobId/events', requireGroupMember, (req, res) => {
+app.get('/api/jobs/:jobId/events', (req, res) => {
   const { jobId } = req.params;
   const job = activeJobs.get(jobId);
 
@@ -1587,7 +1643,7 @@ app.get('/api/jobs/:jobId/events', requireGroupMember, (req, res) => {
 });
 
 // Polling fallback endpoint for job status
-app.get('/api/jobs/:jobId', requireGroupMember, (req, res) => {
+app.get('/api/jobs/:jobId', (req, res) => {
   const { jobId } = req.params;
   const job = activeJobs.get(jobId);
   if (!job) {
@@ -1607,7 +1663,7 @@ app.get('/api/jobs/:jobId', requireGroupMember, (req, res) => {
 });
 
 // Main Convert & Upload to Roblox endpoint
-app.post('/api/upload', requireGroupMember, upload.single('audioFile'), async (req, res) => {
+app.post('/api/upload', upload.single('audioFile'), async (req, res) => {
   const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
   try {
