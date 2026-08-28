@@ -737,16 +737,6 @@ function emitClientJobEvent(jobId: string, update: Partial<ClientJobState>) {
 export function cleanErrorMessage(raw: any): string {
   if (!raw) return 'Ocurrió un error inesperado al procesar la solicitud.';
   const str = typeof raw === 'string' ? raw : raw.message || raw.error || String(raw);
-  
-  if (
-    str.includes('🔑') ||
-    str.includes('🔒') ||
-    str.includes('Moderación') ||
-    str.includes('FFmpeg') ||
-    str.includes('Data incomplete')
-  ) {
-    return str;
-  }
 
   if (
     str.includes('<!DOCTYPE') ||
@@ -755,11 +745,13 @@ export function cleanErrorMessage(raw: any): string {
     str.includes('hosted on Netlify') ||
     str.includes('netlify-deploy')
   ) {
-    return 'El servidor de procesamiento no está disponible en este momento. Inténtalo de nuevo en unos segundos.';
+    return 'El servidor de procesamiento se está reiniciando. Por favor, intenta de nuevo en unos segundos.';
   }
-  if (str.includes('Load failed') || str.includes('Failed to fetch') || str.includes('NetworkError')) {
-    return '⚠️ Error de conexión de red al comunicarse con el servidor o con Roblox. Comprueba tu conexión a internet y tu clave API.';
+
+  if (str.includes('Load failed') || str.includes('NetworkError') || str.includes('Failed to fetch')) {
+    return '⚠️ Error de comunicación con el servidor. Verifica tu conexión a internet o recarga la página.';
   }
+
   return str;
 }
 
@@ -870,11 +862,10 @@ async function executeClientSideUpload(jobId: string, formData: FormData) {
       message: 'Enviando a Roblox Open Cloud Assets API...',
     });
 
-    // Try proxied endpoint first (bypasses browser CORS on server and Netlify), then direct
+    // Try proxied endpoint (bypasses browser CORS on server and Netlify)
     const candidateEndpoints = [
       '/roblox-api-opencloud/assets/v1/assets',
       '/roblox-api-opencloud/v1/assets',
-      'https://apis.roblox.com/assets/v1/assets',
     ];
 
     let uploadRes: Response | null = null;
@@ -1051,7 +1042,7 @@ export async function startUploadJob(formData: FormData): Promise<string> {
       }
     }
 
-    // If server returned a clear JSON error
+    // If server returned an error with JSON payload
     if (!res.ok && res.status !== 404 && contentType.includes('application/json')) {
       const errData = await res.json().catch(() => ({}));
       throw new Error(errData.error || errData.message || `Error del servidor (${res.status})`);
@@ -1062,8 +1053,8 @@ export async function startUploadJob(formData: FormData): Promise<string> {
       // Fall through to client direct upload
     }
   } catch (err: any) {
-    // If it's a real server error (not 404 or connection error), throw it
-    if (err.message && !err.message.includes('404') && !err.message.includes('Failed to fetch')) {
+    // If it's a real server error, propagate it so the user sees the real reason
+    if (err.message && !err.message.includes('404')) {
       throw err;
     }
   }

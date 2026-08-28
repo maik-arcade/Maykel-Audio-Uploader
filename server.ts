@@ -1173,6 +1173,41 @@ app.post('/api/roblox/verify', async (req, res) => {
       });
     }
 
+    // Validate API Key directly with Roblox Open Cloud if provided
+    if (apiKey && typeof apiKey === 'string' && apiKey.trim()) {
+      try {
+        const keyTestRes = await axios.get(
+          'https://apis.roblox.com/assets/v1/operations/00000000-0000-0000-0000-000000000000',
+          {
+            headers: { 'x-api-key': apiKey.trim() },
+            timeout: 6000,
+            validateStatus: () => true,
+          }
+        );
+
+        if (keyTestRes.status === 401) {
+          return res.status(401).json({
+            success: false,
+            error:
+              '🔑 API Key de Roblox inválida o expirada.\n\n' +
+              'Verifica tu clave en roblox.com/dashboard/credentials y asegúrate de haberla copiado completa sin espacios adicionales.',
+          });
+        }
+
+        if (keyTestRes.status === 403) {
+          return res.status(403).json({
+            success: false,
+            error:
+              '🔒 Permiso denegado por Roblox (403 Forbidden).\n\n' +
+              'Tu API Key tiene restricciones de IP activas o no tiene permisos de Open Cloud Assets.\n' +
+              'En roblox.com/dashboard/credentials, edita la clave para habilitar "Assets (Audio: Write)" y no restringir la IP.',
+          });
+        }
+      } catch (keyErr: any) {
+        console.warn('API Key test warning:', keyErr.message);
+      }
+    }
+
     if (creatorType === 'User') {
       try {
         const userRes = await axios.get(`https://users.roblox.com/v1/users/${cleanId}`, {
@@ -1940,9 +1975,17 @@ app.post('/api/upload', upload.single('audioFile'), async (req, res) => {
         emitJobProgress(job);
 
         // Normalize operation URL
-        const opUrl = operationPath.startsWith('http')
-          ? operationPath
-          : `https://apis.roblox.com/assets/v1/${operationPath.replace(/^\//, '')}`;
+        let opUrl = operationPath;
+        if (!opUrl.startsWith('http')) {
+          const cleanPath = operationPath.replace(/^\/+/, '');
+          if (cleanPath.startsWith('assets/v1/')) {
+            opUrl = `https://apis.roblox.com/${cleanPath}`;
+          } else if (cleanPath.startsWith('v1/')) {
+            opUrl = `https://apis.roblox.com/assets/${cleanPath}`;
+          } else {
+            opUrl = `https://apis.roblox.com/assets/v1/${cleanPath}`;
+          }
+        }
 
         let isDone = false;
         let attempts = 0;
