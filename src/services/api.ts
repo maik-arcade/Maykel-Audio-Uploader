@@ -834,27 +834,21 @@ async function executeClientSideUpload(jobId: string, formData: FormData) {
       message: 'Audio codificado a MP3 44.1kHz 192k con éxito. Preparando subida a Roblox...',
     });
 
-    const sanitizedTitle =
-      (displayName || audioFile.name || 'MAYKEL Audio')
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^a-zA-Z0-9 _-]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .substring(0, 48) || 'MAYKEL Audio';
+    const safeRobloxName = `audio_${Math.random().toString(36).slice(2, 8)}`;
+    const cleanCreatorId = (creatorId || '').toString().trim().replace(/\D/g, '');
 
     const uploadForm = new FormData();
     const requestPayload = {
       assetType: 'Audio',
-      displayName: sanitizedTitle,
-      description: 'Uploaded via MAYKEL Audio Uploader',
+      displayName: safeRobloxName,
+      description: 'Uploaded via MAYKEL Audio',
       creationContext: {
-        creator: creatorType === 'User' ? { userId: creatorId } : { groupId: creatorId },
+        creator: (creatorType === 'Group' || creatorType?.toLowerCase() === 'group') ? { groupId: cleanCreatorId } : { userId: cleanCreatorId },
       },
     };
 
     uploadForm.append('request', JSON.stringify(requestPayload));
-    uploadForm.append('fileContent', mp3Blob, `${sanitizedTitle}.mp3`);
+    uploadForm.append('fileContent', mp3Blob, `${safeRobloxName}.mp3`);
 
     emitClientJobEvent(jobId, {
       status: 'uploading',
@@ -918,10 +912,11 @@ async function executeClientSideUpload(jobId: string, formData: FormData) {
 
     if (uploadData.response?.assetId) {
       const assetId = uploadData.response.assetId;
+      const userSongTitle = (displayName || audioFile.name || 'Audio Track').trim();
       saveLocalHistoryItem({
         id: jobId,
         timestamp: Date.now(),
-        displayName: sanitizedTitle,
+        displayName: userSongTitle,
         sourceType: 'file',
         assetId,
         status: 'Completed',
@@ -978,7 +973,7 @@ async function executeClientSideUpload(jobId: string, formData: FormData) {
                   saveLocalHistoryItem({
                     id: jobId,
                     timestamp: Date.now(),
-                    displayName: sanitizedTitle,
+                    displayName: (displayName || audioFile.name || 'Audio Track').trim(),
                     sourceType: 'file',
                     assetId,
                     status: assetId ? 'Completed' : 'Failed',
