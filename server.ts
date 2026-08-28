@@ -313,11 +313,55 @@ function emitJobProgress(job: ActiveJob) {
   });
 }
 
-// Helper: Download audio from URL (YouTube Invidious cluster, SoundCloud, Direct URL, yt-dlp) safely
+// Helper: Download audio from URL (yt-dlp, SoundCloud, Direct URL, YouTube Invidious) safely
 async function downloadYouTubeAudio(url: string, outputPath: string): Promise<string> {
   const trimmedUrl = url.trim();
 
-  // Case A: Direct Audio URL (e.g. .mp3, .wav, .ogg, .flac or direct stream)
+  // Priority 1: yt-dlp (Fastest, extracts title, direct audio streams, full YouTube & SoundCloud support)
+  const ytdlpPath = path.join(process.cwd(), 'bin', 'yt-dlp');
+  if (fs.existsSync(ytdlpPath)) {
+    const tempDir = path.dirname(outputPath);
+    const tempBase = `ytdl_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const tempOutputTemplate = path.join(tempDir, `${tempBase}.%(ext)s`);
+
+    try {
+      const isYouTube = /(youtube\.com|youtu\.be)/i.test(trimmedUrl);
+      const args = [
+        '--no-playlist',
+        '--no-simulate',
+        '-f',
+        'ba/b',
+        '-x',
+        '--audio-format',
+        'mp3',
+        '-o',
+        tempOutputTemplate,
+        '--print',
+        '%(title)s',
+        trimmedUrl,
+      ];
+
+      const { stdout } = await execFileAsync(ytdlpPath, args, { timeout: 45000 });
+      const videoTitle = stdout.trim().split('\n')[0] || 'Audio';
+
+      const downloadedMp3 = path.join(tempDir, `${tempBase}.mp3`);
+      if (fs.existsSync(downloadedMp3)) {
+        if (fs.existsSync(outputPath)) {
+          fs.unlinkSync(outputPath);
+        }
+        fs.renameSync(downloadedMp3, outputPath);
+        return videoTitle;
+      }
+    } catch (ytdlpErr: any) {
+      console.warn('yt-dlp attempt failed, trying fallback...', ytdlpErr.message);
+      const stray = path.join(tempDir, `${tempBase}.mp3`);
+      if (fs.existsSync(stray)) {
+        try { fs.unlinkSync(stray); } catch {}
+      }
+    }
+  }
+
+  // Priority 2: Direct Audio URL (e.g. .mp3, .wav, .ogg, .flac or direct stream)
   const isDirectAudio = /\.(mp3|wav|ogg|flac|m4a|aac)(\?.*)?$/i.test(trimmedUrl);
   if (isDirectAudio) {
     try {
@@ -346,7 +390,7 @@ async function downloadYouTubeAudio(url: string, outputPath: string): Promise<st
     }
   }
 
-  // Case B: YouTube Invidious / Piped API Instances (Bypasses bot-detection without IP block)
+  // Priority 3: YouTube Invidious / Piped API Instances (Bypasses bot-detection without IP block)
   const ytMatch = trimmedUrl.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
   if (ytMatch && ytMatch[1]) {
     const videoId = ytMatch[1];
@@ -399,54 +443,6 @@ async function downloadYouTubeAudio(url: string, outputPath: string): Promise<st
         }
       } catch (instErr: any) {
         // Continue to next instance
-      }
-    }
-  }
-
-  // Case C: yt-dlp for SoundCloud, YouTube, and other media sources
-  const ytdlpPath = path.join(process.cwd(), 'bin', 'yt-dlp');
-  if (fs.existsSync(ytdlpPath)) {
-    const tempDir = path.dirname(outputPath);
-    const tempBase = `ytdl_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-    const tempOutputTemplate = path.join(tempDir, `${tempBase}.%(ext)s`);
-
-    try {
-      const isYouTube = /(youtube\.com|youtu\.be)/i.test(trimmedUrl);
-      const args = [
-        '--no-playlist',
-        '--no-simulate',
-        ...(isYouTube ? ['--extractor-args', 'youtube:player_client=ios,android,web,tv'] : []),
-        '-f',
-        'ba/b',
-        '-x',
-        '--audio-format',
-        'mp3',
-        '-o',
-        tempOutputTemplate,
-        '--print',
-        '%(title)s',
-        trimmedUrl,
-      ];
-
-      const { stdout } = await execFileAsync(ytdlpPath, args, { timeout: 45000 });
-      const videoTitle = stdout.trim().split('\n')[0] || 'Audio';
-
-      const downloadedMp3 = path.join(tempDir, `${tempBase}.mp3`);
-      if (fs.existsSync(downloadedMp3)) {
-        if (fs.existsSync(outputPath)) {
-          fs.unlinkSync(outputPath);
-        }
-        fs.renameSync(downloadedMp3, outputPath);
-        return videoTitle;
-      }
-    } catch (ytdlpErr: any) {
-      console.warn('yt-dlp attempt failed:', ytdlpErr.message);
-      const stray = path.join(tempDir, `${tempBase}.mp3`);
-      if (fs.existsSync(stray)) {
-        try { fs.unlinkSync(stray); } catch {}
-      }
-      if (/soundcloud\.com/i.test(trimmedUrl)) {
-        throw new Error(`Error al descargar desde SoundCloud: ${ytdlpErr.message}`);
       }
     }
   }
@@ -1173,29 +1169,13 @@ app.post('/api/roblox/verify', async (req, res) => {
       });
     }
 
-    // Validate API Key directly with Roblox Open Cloud if provided
-    if (apiKey && typeof apiKey === 'string' && apiKey.trim()) {
-      try {
-        const keyTestRes = await axios.get(
-          'https://apis.roblox.com/assets/v1/operations/00000000-0000-0000-0000-000000000000',
-          {
-            headers: { 'x-api-key': apiKey.trim() },
-            timeout: 6000,
-            validateStatus: () => true,
-          }
-        );
-
-        if (keyTestRes.status === 401) {
-          return res.status(401).json({
-            success: false,
-            error:
-              '🔑 API Key de Roblox inválida o no reconocida por Roblox.\n\n' +
-              'Verifica tu clave en roblox.com/dashboard/credentials y asegúrate de haberla copiado completa sin espacios adicionales.',
-          });
-        }
-      } catch (keyErr: any) {
-        console.warn('API Key test warning:', keyErr.message);
-      }
+    // Clean API Key format
+    const cleanApiKey = (apiKey || '').toString().trim();
+    if (!cleanApiKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'Debes ingresar tu clave API de Roblox Open Cloud.',
+      });
     }
 
     if (creatorType === 'User') {
