@@ -3,24 +3,35 @@
   publish = "dist"
 
 [[redirects]]
+  from = "/roblox-api-opencloud/*"
+  to = "https://apis.roblox.com/:splat"
+  status = 200
+  force = true
+  headers = { Access-Control-Allow-Origin = "*", Access-Control-Allow-Headers = "*" }
+
+[[redirects]]
   from = "/roblox-api-users/*"
   to = "https://users.roblox.com/:splat"
   status = 200
   force = true
+  headers = { Access-Control-Allow-Origin = "*", Access-Control-Allow-Headers = "*" }
 
 [[redirects]]
   from = "/roblox-api-groups/*"
   to = "https://groups.roblox.com/:splat"
   status = 200
   force = true
+  headers = { Access-Control-Allow-Origin = "*", Access-Control-Allow-Headers = "*" }
 
 [[redirects]]
   from = "/roblox-api-thumbnails/*"
   to = "https://thumbnails.roblox.com/:splat"
   status = 200
   force = true
+  headers = { Access-Control-Allow-Origin = "*", Access-Control-Allow-Headers = "*" }
 
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
+

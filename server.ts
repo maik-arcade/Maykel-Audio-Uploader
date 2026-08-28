@@ -187,6 +187,56 @@ app.all('/roblox-api-thumbnails/*', async (req, res) => {
   }
 });
 
+app.all('/roblox-api-opencloud/*', upload.single('fileContent'), async (req, res) => {
+  try {
+    const subpath = req.url.replace('/roblox-api-opencloud', '');
+    const robloxUrl = `https://apis.roblox.com${subpath}`;
+    const apiKey = (req.headers['x-api-key'] as string) || '';
+
+    if (req.file) {
+      const FormData = require('form-data');
+      const form = new FormData();
+      if (req.body.request) {
+        form.append('request', req.body.request);
+      }
+      form.append('fileContent', fs.createReadStream(req.file.path), {
+        filename: req.file.originalname || 'audio.mp3',
+        contentType: req.file.mimetype || 'audio/mpeg',
+      });
+
+      const response = await axios.post(robloxUrl, form, {
+        headers: {
+          ...form.getHeaders(),
+          'x-api-key': apiKey,
+        },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+        validateStatus: () => true,
+      });
+
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch {}
+
+      return res.status(response.status).json(response.data);
+    }
+
+    const response = await axios({
+      method: req.method as any,
+      url: robloxUrl,
+      data: req.body,
+      headers: {
+        'x-api-key': apiKey,
+        'Content-Type': req.headers['content-type'] || 'application/json',
+      },
+      validateStatus: () => true,
+    });
+    res.status(response.status).json(response.data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Helper: load history
 function loadHistory(): UploadHistoryItem[] {
   try {

@@ -744,12 +744,15 @@ export function cleanErrorMessage(raw: any): string {
     str.includes('hosted on Netlify') ||
     str.includes('netlify-deploy')
   ) {
-    return '⚠️ El servidor backend no está disponible en este despliegue estático (404). Por favor selecciona un "Archivo local" (.mp3/.wav); la app lo procesará con tus efectos en el navegador y lo subirá a Roblox directamente con tu API Key.';
+    return '⚠️ El servidor backend no respondió en esta ruta. Procesando y subiendo el audio directamente...';
+  }
+  if (str.includes('Load failed') || str.includes('Failed to fetch') || str.includes('NetworkError')) {
+    return '⚠️ Error de red o bloqueo del navegador al conectar con Roblox. Asegúrate de que tu clave API de Roblox Open Cloud esté activa y tenga habilitado el permiso de "Assets (Audio: Write)".';
   }
   return str;
 }
 
-// Client-side Direct Roblox Open Cloud Upload Engine
+// Client-side Direct Roblox Open Cloud Upload Engine with multi-tier proxy fallback
 async function executeClientSideUpload(jobId: string, formData: FormData) {
   const creatorType = (formData.get('creatorType') as string) || 'User';
   let creatorId = ((formData.get('creatorId') as string) || '').trim();
@@ -778,8 +781,8 @@ async function executeClientSideUpload(jobId: string, formData: FormData) {
         progress: 0,
         message: 'Servidor no disponible para YouTube',
         error:
-          '⚠️ En alojamientos estáticos (como Netlify) no hay servidor FFmpeg para descargar enlaces de YouTube.\n\n' +
-          '💡 Solución rápida: Descarga el audio a tu dispositivo como .mp3 o .wav y arrástralo en "Archivo local". ¡La aplicación le aplicará los efectos y lo subirá a Roblox al instante!',
+          '⚠️ Para procesar audios de YouTube se requiere el backend activo.\n\n' +
+          '💡 Solución rápida: Descarga el audio en tu dispositivo como .mp3 o .wav y súbelo en "Archivo local". ¡La app lo modificará y lo subirá a Roblox inmediatamente!',
       });
       return;
     }
@@ -855,26 +858,45 @@ async function executeClientSideUpload(jobId: string, formData: FormData) {
       message: 'Enviando a Roblox Open Cloud Assets API...',
     });
 
-    let uploadRes: Response;
-    try {
-      uploadRes = await fetch('https://apis.roblox.com/assets/v1/assets', {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-        },
-        body: uploadForm,
-      });
-    } catch (fetchErr: any) {
+    // Try proxied endpoint first (bypasses browser CORS on Netlify and Express server), then direct
+    const candidateEndpoints = [
+      '/roblox-api-opencloud/v1/assets',
+      '/roblox-api-opencloud/assets/v1/assets',
+      'https://apis.roblox.com/assets/v1/assets',
+    ];
+
+    let uploadRes: Response | null = null;
+    let lastFetchError: any = null;
+
+    for (const endpoint of candidateEndpoints) {
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'x-api-key': apiKey,
+          },
+          body: uploadForm,
+        });
+        if (res.status !== 404) {
+          uploadRes = res;
+          break;
+        }
+      } catch (err: any) {
+        lastFetchError = err;
+      }
+    }
+
+    if (!uploadRes) {
       throw new Error(
-        'Error de conexión con Roblox Open Cloud: ' +
-          (fetchErr.message || 'Verifica tu conexión a internet o posibles bloqueadores de CORS.')
+        lastFetchError?.message ||
+          'No se pudo establecer conexión con los servidores de Roblox Open Cloud. Verifica tu clave API o conexión de red.'
       );
     }
 
     if (!uploadRes.ok) {
       const errText = await uploadRes.text().catch(() => '');
       if (uploadRes.status === 401 || uploadRes.status === 403) {
-        throw new Error('🔑 API Key de Roblox inválida, expirada o sin permisos de Assets (Audio Write).');
+        throw new Error('🔑 API Key de Roblox inválida, expirada o sin permisos de "Assets (Audio: Write)".');
       }
       throw new Error(`Roblox Open Cloud error (${uploadRes.status}): ${cleanErrorMessage(errText)}`);
     }
@@ -916,9 +938,12 @@ async function executeClientSideUpload(jobId: string, formData: FormData) {
         message: 'Verificando moderación y asignación de Asset ID en Roblox...',
       });
 
-      const opUrl = operationPath.startsWith('http')
-        ? operationPath
-        : `https://apis.roblox.com/assets/v1/${operationPath.replace(/^\//, '')}`;
+      const cleanOpPath = operationPath.replace(/^\/?(assets\/)?v1\//, '').replace(/^\//, '');
+      const opCandidateUrls = [
+        `/roblox-api-opencloud/v1/${cleanOpPath}`,
+        `/roblox-api-opencloud/assets/v1/${cleanOpPath}`,
+        operationPath.startsWith('http') ? operationPath : `https://apis.roblox.com/assets/v1/${cleanOpPath}`,
+      ];
 
       let isDone = false;
       let attempts = 0;
@@ -926,41 +951,46 @@ async function executeClientSideUpload(jobId: string, formData: FormData) {
         await new Promise((r) => setTimeout(r, 2000));
         attempts++;
         try {
-          const pollRes = await fetch(opUrl, {
-            headers: { 'x-api-key': apiKey },
-          });
-          if (pollRes.ok) {
-            const pollData = await pollRes.json();
-            if (pollData.done) {
-              isDone = true;
-              const assetId = pollData.response?.assetId || pollData.response?.id || '';
-              const modState = pollData.response?.moderationResult?.moderationState || 'MODERATION_STATE_APPROVED';
-
-              saveLocalHistoryItem({
-                id: jobId,
-                timestamp: Date.now(),
-                displayName: sanitizedTitle,
-                sourceType: 'file',
-                assetId,
-                status: assetId ? 'Completed' : 'Failed',
-                creatorType: creatorType as CreatorType,
-                creatorId,
-                speed,
-                amplification,
-                maxDuration,
-                moderationState: modState,
+          for (const opUrl of opCandidateUrls) {
+            try {
+              const pollRes = await fetch(opUrl, {
+                headers: { 'x-api-key': apiKey },
               });
+              if (pollRes.ok) {
+                const pollData = await pollRes.json();
+                if (pollData.done) {
+                  isDone = true;
+                  const assetId = pollData.response?.assetId || pollData.response?.id || '';
+                  const modState = pollData.response?.moderationResult?.moderationState || 'MODERATION_STATE_APPROVED';
 
-              emitClientJobEvent(jobId, {
-                status: assetId ? 'completed' : 'failed',
-                progress: assetId ? 100 : 85,
-                message: assetId ? '¡Audio subido con éxito a Roblox!' : 'Roblox rechazó el asset',
-                assetId: assetId || undefined,
-                moderationState: modState,
-                error: assetId ? undefined : 'No se pudo generar el Asset ID en Roblox.',
-              });
-              return;
-            }
+                  saveLocalHistoryItem({
+                    id: jobId,
+                    timestamp: Date.now(),
+                    displayName: sanitizedTitle,
+                    sourceType: 'file',
+                    assetId,
+                    status: assetId ? 'Completed' : 'Failed',
+                    creatorType: creatorType as CreatorType,
+                    creatorId,
+                    speed,
+                    amplification,
+                    maxDuration,
+                    moderationState: modState,
+                  });
+
+                  emitClientJobEvent(jobId, {
+                    status: assetId ? 'completed' : 'failed',
+                    progress: assetId ? 100 : 85,
+                    message: assetId ? '¡Audio subido con éxito a Roblox!' : 'Roblox rechazó el asset',
+                    assetId: assetId || undefined,
+                    moderationState: modState,
+                    error: assetId ? undefined : 'No se pudo generar el Asset ID en Roblox.',
+                  });
+                  return;
+                }
+                break;
+              }
+            } catch {}
           }
         } catch {}
       }
