@@ -384,6 +384,26 @@ export const ResultCard: React.FC<ResultCardProps> = ({
         </div>
 
         <div className="bg-[#0A0E17]/60 p-3 rounded-xl border border-slate-800/80">
+          <span className="text-slate-500 font-medium block mb-0.5">NekoDJ effectSpeed</span>
+          <div className="flex items-center justify-between">
+            <span className="text-cyan-300 font-bold font-mono">
+              {(1 / (details?.speed || 2.33)).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                const val = (1 / (details?.speed || 2.33)).toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+                navigator.clipboard.writeText(val);
+                onShowToast(`effectSpeed copiado: ${val}`, 'success');
+              }}
+              className="text-[10px] text-cyan-400 hover:text-white underline font-medium"
+            >
+              Copiar
+            </button>
+          </div>
+        </div>
+
+        <div className="bg-[#0A0E17]/60 p-3 rounded-xl border border-slate-800/80">
           <span className="text-slate-500 font-medium block mb-0.5">Fecha y hora</span>
           <span className="text-slate-300 font-medium truncate block" title={formattedDate}>
             {formattedDate}

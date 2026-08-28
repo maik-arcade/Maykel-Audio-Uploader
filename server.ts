@@ -1855,32 +1855,28 @@ app.post('/api/upload', upload.single('audioFile'), async (req, res) => {
         job.message = 'Enviando a Roblox Open Cloud Assets API...';
         emitJobProgress(job);
 
-        // Sanitize display name strictly according to Roblox Open Cloud Asset schema
-        // Must be alphanumeric with spaces, underscores or hyphens only (max 50 chars)
-        const sanitizedTitle = (displayName || 'MAYKEL Audio')
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, '') // remove accents (á -> a, etc.)
-          .replace(/[^a-zA-Z0-9 _-]/g, ' ') // replace punctuation/symbols with spaces
-          .replace(/\s+/g, ' ')
-          .trim()
-          .substring(0, 48);
+        // Safe Roblox Asset Name (Nomen Audio pattern: 'audio_' + random string)
+        // This avoids Roblox automated keyword/trademark/copyright filters on the asset title
+        const safeRobloxAssetName = `audio_${Math.random().toString(36).slice(2, 8)}`;
 
-        const cleanDisplayName = sanitizedTitle.length > 0 ? sanitizedTitle : 'MAYKEL Audio';
-        let cleanCreatorId = creatorId.toString().trim();
-        if (!/^\d+$/.test(cleanCreatorId)) {
-          const resolved = await resolveRobloxUser(cleanCreatorId);
+        const userDisplayTitle = (displayName || 'Audio Track')
+          .trim()
+          .substring(0, 100);
+
+        let cleanCreatorId = creatorId.toString().trim().replace(/\D/g, '');
+        if (!cleanCreatorId) {
+          const resolved = await resolveRobloxUser(creatorId.toString().trim());
           if (resolved) {
-            cleanCreatorId = resolved.id;
+            cleanCreatorId = resolved.id.replace(/\D/g, '');
           }
         }
-        cleanCreatorId = cleanCreatorId.replace(/[^\d]/g, '').trim();
 
         if (!cleanCreatorId) {
-          throw new Error('El ID de creador de Roblox no es válido o no pudo resolverse.');
+          throw new Error('El ID de creador de Roblox debe contener únicamente dígitos numéricos.');
         }
 
         const creationCreator: any = {};
-        if (creatorType === 'Group') {
+        if (creatorType === 'Group' || creatorType?.toLowerCase() === 'group') {
           creationCreator.groupId = cleanCreatorId;
         } else {
           creationCreator.userId = cleanCreatorId;
@@ -1888,8 +1884,8 @@ app.post('/api/upload', upload.single('audioFile'), async (req, res) => {
 
         const requestJson = {
           assetType: 'Audio',
-          displayName: cleanDisplayName,
-          description: 'Uploaded via MAYKEL',
+          displayName: safeRobloxAssetName,
+          description: 'Uploaded via MAYKEL Audio',
           creationContext: {
             creator: creationCreator,
           },
@@ -1898,7 +1894,7 @@ app.post('/api/upload', upload.single('audioFile'), async (req, res) => {
         const formData = new FormData();
         formData.append('request', JSON.stringify(requestJson));
         formData.append('fileContent', fs.createReadStream(processedMp3Path), {
-          filename: `${cleanDisplayName.replace(/\s+/g, '_')}.mp3`,
+          filename: `${safeRobloxAssetName}.mp3`,
           contentType: 'audio/mpeg',
         });
 
@@ -2035,7 +2031,7 @@ app.post('/api/upload', upload.single('audioFile'), async (req, res) => {
         const isRejected = moderationResult === 'MODERATION_STATE_REJECTED' || moderationResult === 'REJECTED';
 
         job.details = {
-          displayName: cleanDisplayName,
+          displayName: userDisplayTitle,
           speed: speedNum,
           amplification: ampNum,
           duration: maxDurNum,
@@ -2069,7 +2065,7 @@ app.post('/api/upload', upload.single('audioFile'), async (req, res) => {
           saveHistoryItem({
             id: jobId,
             timestamp: Date.now(),
-            displayName: cleanDisplayName,
+            displayName: userDisplayTitle,
             sourceType: detectedSourceType,
             sourceUrl: trimmedSourceUrl,
             thumbnail: cleanThumbnail,
@@ -2093,7 +2089,7 @@ app.post('/api/upload', upload.single('audioFile'), async (req, res) => {
           saveHistoryItem({
             id: jobId,
             timestamp: Date.now(),
-            displayName: cleanDisplayName,
+            displayName: userDisplayTitle,
             sourceType: detectedSourceType,
             sourceUrl: trimmedSourceUrl,
             thumbnail: cleanThumbnail,

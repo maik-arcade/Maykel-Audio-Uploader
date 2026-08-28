@@ -170,6 +170,36 @@ export const AdvancedSettingsCard: React.FC<AdvancedSettingsCardProps> = ({
             <span className="text-slate-400">2.33x (Normal)</span>
             <span>2.90x (Máx)</span>
           </div>
+
+          {/* NekoDJ / Roblox Boombox effectSpeed Info Box */}
+          <div className="mt-3.5 pt-3 border-t border-slate-800/80 flex items-center justify-between">
+            <div>
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-300">
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Valor NekoDJ / Boombox (effectSpeed):</span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Velocidad de reproducción inversa para volver a escuchar a velocidad normal en Roblox
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="px-2.5 py-1 bg-cyan-950/60 border border-cyan-500/30 rounded-lg text-sm font-mono font-bold text-cyan-200">
+                {(1 / settings.speed).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}
+              </span>
+              <button
+                type="button"
+                id="copy-effect-speed-btn"
+                onClick={() => {
+                  const val = (1 / settings.speed).toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+                  navigator.clipboard.writeText(val);
+                }}
+                className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs transition-colors"
+                title="Copiar valor effectSpeed"
+              >
+                Copiar
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* 2. Amplificación Slider */}
