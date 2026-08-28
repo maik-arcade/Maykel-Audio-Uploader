@@ -695,161 +695,30 @@ export function saveLocalHistoryItem(item: UploadHistoryItem): void {
   } catch {}
 }
 
-export async function startUploadJob(formData: FormData): Promise<string> {
-  try {
-    const res = await fetch('/api/upload', {
-      method: 'POST',
-      headers: getAuthHeaders(),
-      body: formData,
-    });
+import { processAudioInBrowser } from '../utils/audioProcessor';
 
-    const contentType = res.headers.get('content-type') || '';
-    if (res.ok && contentType.includes('application/json')) {
-      const data = await res.json();
+export async function startUploadJob(formData: FormData): Promise<string> {
+  const res = await fetch('/api/upload', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: formData,
+  });
+
+  const contentType = res.headers.get('content-type') || '';
+  if (res.ok && contentType.includes('application/json')) {
+    const data = await res.json();
+    if (data.jobId) {
       return data.jobId;
     }
-
-    if (!res.ok && res.status !== 404 && contentType.includes('application/json')) {
-      const errData = await res.json();
-      throw new Error(errData.message || errData.error || 'Error al iniciar el proceso de upload');
-    }
-  } catch (err: any) {
-    if (err.message && !err.message.includes('404') && !err.message.includes('Failed to fetch')) {
-      throw err;
-    }
   }
 
-  // Netlify direct client upload to Roblox Open Cloud
-  const creatorType = (formData.get('creatorType') as string) || 'User';
-  let creatorId = ((formData.get('creatorId') as string) || '').trim();
-  const apiKey = ((formData.get('apiKey') as string) || '').trim();
-  const displayName = ((formData.get('displayName') as string) || 'MAYKEL Audio').trim();
-  const audioFile = formData.get('audioFile') as File | null;
-  const youtubeUrl = ((formData.get('youtubeUrl') as string) || '').trim();
-
-  if (!apiKey) throw new Error('Debes ingresar tu clave API de Roblox Open Cloud.');
-
-  if (!audioFile) {
-    if (youtubeUrl) {
-      throw new Error(
-        'Para procesar y subir audios desde enlaces de YouTube o SoundCloud, la aplicación requiere el servidor backend activo.\n\n' +
-        '💡 Alternativa rápida: Descarga el archivo de audio (.mp3 o .wav) a tu dispositivo y arrástralo en "Archivo local". ¡El sistema lo modificará con tus efectos y lo subirá a Roblox inmediatamente!'
-      );
-    }
-    throw new Error('No se seleccionó ningún archivo de audio ni enlace válido.');
+  if (contentType.includes('application/json')) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || errData.message || `Error del servidor (${res.status})`);
   }
 
-  // Clean creator ID
-  if (creatorType === 'User' && !/^\d+$/.test(creatorId)) {
-    const resUser = await clientResolveRobloxUser(creatorId);
-    if (resUser) creatorId = resUser.id;
-  }
-  creatorId = creatorId.replace(/[^\d]/g, '');
-  if (!creatorId) throw new Error('El ID de creador no es válido.');
-
-  const clientJobId = `job_client_${Date.now()}`;
-
-  // Run upload in background
-  (async () => {
-    try {
-      const sanitizedTitle = (displayName || 'MAYKEL Audio')
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^a-zA-Z0-9 _-]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .substring(0, 48) || 'MAYKEL Audio';
-
-      const uploadForm = new FormData();
-      const requestPayload = {
-        assetType: 'Audio',
-        displayName: sanitizedTitle,
-        description: 'Subido con MAYKEL Audio Uploader',
-        creationContext: {
-          creator: creatorType === 'User' ? { userId: creatorId } : { groupId: creatorId },
-        },
-      };
-
-      uploadForm.append('request', JSON.stringify(requestPayload));
-      uploadForm.append('fileContent', audioFile, audioFile.name || 'audio.mp3');
-
-      const uploadRes = await fetch('https://apis.roblox.com/assets/v1/assets', {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-        },
-        body: uploadForm,
-      });
-
-      if (!uploadRes.ok) {
-        const errText = await uploadRes.text();
-        throw new Error(`Roblox Open Cloud error (${uploadRes.status}): ${errText}`);
-      }
-
-      const uploadData = await uploadRes.json();
-      const operationPath = uploadData.path || uploadData.operationId || uploadData.name;
-
-      if (uploadData.response?.assetId) {
-        const assetId = uploadData.response.assetId;
-        saveLocalHistoryItem({
-          id: clientJobId,
-          timestamp: Date.now(),
-          displayName: sanitizedTitle,
-          sourceType: 'file',
-          assetId,
-          status: 'Completed',
-          creatorType: creatorType as CreatorType,
-          creatorId,
-          speed: 1,
-          amplification: 1,
-          maxDuration: 420,
-          moderationState: 'MODERATION_STATE_APPROVED',
-        });
-      } else if (operationPath) {
-        // Poll operation
-        const opUrl = operationPath.startsWith('http')
-          ? operationPath
-          : `https://apis.roblox.com/assets/v1/${operationPath.replace(/^\//, '')}`;
-
-        let isDone = false;
-        let attempts = 0;
-        while (!isDone && attempts < 40) {
-          await new Promise((r) => setTimeout(r, 2500));
-          attempts++;
-          try {
-            const pollRes = await fetch(opUrl, {
-              headers: { 'x-api-key': apiKey },
-            });
-            if (pollRes.ok) {
-              const pollData = await pollRes.json();
-              if (pollData.done) {
-                isDone = true;
-                const assetId = pollData.response?.assetId || pollData.response?.id || '';
-                saveLocalHistoryItem({
-                  id: clientJobId,
-                  timestamp: Date.now(),
-                  displayName: sanitizedTitle,
-                  sourceType: 'file',
-                  assetId,
-                  status: assetId ? 'Completed' : 'Failed',
-                  creatorType: creatorType as CreatorType,
-                  creatorId,
-                  speed: 1,
-                  amplification: 1,
-                  maxDuration: 420,
-                  moderationState: pollData.response?.moderationResult?.moderationState || 'MODERATION_STATE_APPROVED',
-                });
-              }
-            }
-          } catch {}
-        }
-      }
-    } catch (e: any) {
-      console.error('Client upload error:', e);
-    }
-  })();
-
-  return clientJobId;
+  const rawText = await res.text().catch(() => '');
+  throw new Error(rawText || `Error inesperado del servidor (${res.status})`);
 }
 
 export function subscribeToJobEvents(
@@ -857,110 +726,55 @@ export function subscribeToJobEvents(
   onEvent: (event: JobProgressEvent) => void,
   onError: (err: Error) => void
 ): () => void {
-  let eventSource: EventSource | null = null;
   let pollInterval: any = null;
   let isClosed = false;
+  let consecutiveErrors = 0;
 
   function cleanup() {
     isClosed = true;
-    if (eventSource) {
-      try {
-        eventSource.close();
-      } catch {}
-      eventSource = null;
-    }
     if (pollInterval) {
       clearInterval(pollInterval);
       pollInterval = null;
     }
   }
 
-  const token = getAuthToken();
+  async function checkJobStatus() {
+    if (isClosed) return;
+    try {
+      const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
+        headers: getAuthHeaders(),
+      });
 
-  function startPolling() {
-    if (isClosed || pollInterval) return;
-
-    pollInterval = setInterval(async () => {
-      if (isClosed) return;
-      try {
-        const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
-          headers: getAuthHeaders(),
-        });
-        if (!res.ok) {
-          // If in client-mode jobId
-          if (jobId.startsWith('job_client_')) {
-            const history = await fetchHistory();
-            const found = history.find((h) => h.id === jobId);
-            if (found) {
-              onEvent({
-                jobId,
-                status: found.status === 'Completed' ? 'completed' : 'failed',
-                progress: 100,
-                message: found.status === 'Completed' ? '¡Audio subido con éxito a Roblox!' : 'Fallo en la subida',
-                assetId: found.assetId,
-                moderationState: found.moderationState,
-              });
-              cleanup();
-              return;
-            }
-          }
-          return;
-        }
-        const data: JobProgressEvent = await res.json();
-        onEvent(data);
-        if (data.status === 'completed' || data.status === 'rejected' || data.status === 'failed') {
+      if (!res.ok) {
+        consecutiveErrors++;
+        if (consecutiveErrors >= 8 && !isClosed) {
+          onError(new Error(`No se pudo conectar con el progreso del trabajo (${res.status}).`));
           cleanup();
         }
-      } catch (err: any) {
-        if (!isClosed) {
-          onError(err instanceof Error ? err : new Error(String(err)));
-          cleanup();
-        }
+        return;
       }
-    }, 1500);
-  }
 
-  try {
-    const isOriginValid =
-      typeof window !== 'undefined' &&
-      window.location &&
-      typeof window.location.origin === 'string' &&
-      window.location.origin !== 'null' &&
-      window.location.origin.startsWith('http');
+      consecutiveErrors = 0;
+      const data: JobProgressEvent = await res.json();
+      onEvent(data);
 
-    if (typeof EventSource !== 'undefined' && isOriginValid) {
-      const sseUrl = `${window.location.origin}/api/jobs/${encodeURIComponent(jobId)}/events${
-        token ? `?sessionToken=${encodeURIComponent(token)}` : ''
-      }`;
-      eventSource = new EventSource(sseUrl);
-
-      eventSource.onmessage = (e) => {
-        try {
-          const data: JobProgressEvent = JSON.parse(e.data);
-          onEvent(data);
-          if (data.status === 'completed' || data.status === 'rejected' || data.status === 'failed') {
-            cleanup();
-          }
-        } catch (err) {
-          console.error('Error parsing SSE event', err);
-        }
-      };
-
-      eventSource.onerror = () => {
-        if (eventSource) {
-          try {
-            eventSource.close();
-          } catch {}
-          eventSource = null;
-        }
-        startPolling();
-      };
-    } else {
-      startPolling();
+      if (data.status === 'completed' || data.status === 'rejected' || data.status === 'failed') {
+        cleanup();
+      }
+    } catch (err: any) {
+      consecutiveErrors++;
+      if (consecutiveErrors >= 8 && !isClosed) {
+        onError(err instanceof Error ? err : new Error(String(err)));
+        cleanup();
+      }
     }
-  } catch {
-    startPolling();
   }
+
+  // Initial immediate check
+  checkJobStatus();
+
+  // Fast smooth polling every 800ms
+  pollInterval = setInterval(checkJobStatus, 800);
 
   return cleanup;
 }
@@ -968,7 +782,46 @@ export function subscribeToJobEvents(
 export async function requestAudioPreview(formData: FormData): Promise<string> {
   const mode = (formData.get('mode') as string) || 'processed';
   const audioFile = formData.get('audioFile') as File | null;
+  const speed = parseFloat((formData.get('speed') as string) || '2.33') || 2.33;
+  const amplification = parseFloat((formData.get('amplification') as string) || '-4') || -4;
+  const maxDuration = parseFloat((formData.get('maxDuration') as string) || '400') || 400;
 
+  // If original mode and local file is provided, create instant blob URL
+  if (audioFile && mode === 'original') {
+    return URL.createObjectURL(audioFile);
+  }
+
+  // If processed mode and local file is provided, try server first then instant browser fallback
+  if (audioFile && mode === 'processed') {
+    try {
+      const res = await fetch('/api/preview-audio', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: formData,
+      });
+
+      if (res.ok) {
+        const blob = await res.blob();
+        return URL.createObjectURL(blob);
+      }
+    } catch {
+      // Fallback below to browser processing
+    }
+
+    // Client-side Web Audio API synthesizer for instant 100% reliable preview
+    try {
+      return await processAudioInBrowser(audioFile, {
+        speed,
+        amplification,
+        maxDuration,
+      });
+    } catch (browserErr: any) {
+      console.warn('Browser audio processing fallback error:', browserErr);
+      throw new Error(browserErr.message || 'No se pudo procesar el audio con efectos en el navegador.');
+    }
+  }
+
+  // Remote URL (YouTube / SoundCloud / Direct Link)
   try {
     const res = await fetch('/api/preview-audio', {
       method: 'POST',
@@ -981,7 +834,6 @@ export async function requestAudioPreview(formData: FormData): Promise<string> {
       return URL.createObjectURL(blob);
     }
 
-    // Try reading JSON error message if available
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const errData = await res.json().catch(() => ({}));
@@ -989,13 +841,9 @@ export async function requestAudioPreview(formData: FormData): Promise<string> {
         throw new Error(errData.message || errData.error);
       }
     }
-    throw new Error(`Error en el servidor (${res.status}) al procesar vista previa.`);
+    throw new Error(`Error en el servidor (${res.status}) al procesar el audio.`);
   } catch (err: any) {
-    // If it's a local file and original mode, use direct client blob
-    if (audioFile && mode === 'original') {
-      return URL.createObjectURL(audioFile);
-    }
-    throw new Error(err.message || 'No se pudo generar la vista previa del audio en este momento.');
+    throw new Error(err.message || 'No se pudo generar la vista previa del audio.');
   }
 }
 
