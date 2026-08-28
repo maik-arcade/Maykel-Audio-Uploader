@@ -33,6 +33,7 @@ import {
   verifyRobloxAccount,
   fetchAuthSession,
   robloxLogout,
+  cleanErrorMessage,
 } from './services/api';
 
 const STORAGE_KEYS = {
@@ -380,25 +381,29 @@ export default function App() {
           } else if (event.status === 'rejected') {
             setIsUploading(false);
             setLatestResult(event);
-            setErrorMessage(`El audio fue rechazado por Roblox: ${event.details || event.message}`);
+            const msg = cleanErrorMessage(`El audio fue rechazado por Roblox: ${event.details || event.message}`);
+            setErrorMessage(msg);
             loadHistoryData();
             addToast('El audio fue bloqueado por moderación de Roblox', 'error');
           } else if (event.status === 'failed') {
             setIsUploading(false);
-            setErrorMessage(event.error || event.message || 'Error en el procesamiento del audio');
-            addToast(event.error || 'Error al procesar audio', 'error');
+            const msg = cleanErrorMessage(event.error || event.message || 'Error en el procesamiento del audio');
+            setErrorMessage(msg);
+            addToast(msg, 'error');
           }
         },
         (err) => {
           setIsUploading(false);
-          setErrorMessage(err.message || 'Error de conexión durante el seguimiento del trabajo');
-          addToast('Error de conexión en el progreso', 'error');
+          const msg = cleanErrorMessage(err.message || 'Error de conexión durante el seguimiento del trabajo');
+          setErrorMessage(msg);
+          addToast(msg, 'error');
         }
       );
     } catch (err: any) {
       setIsUploading(false);
-      setErrorMessage(err.message || 'Error al iniciar la subida');
-      addToast(err.message || 'Error al iniciar subida', 'error');
+      const msg = cleanErrorMessage(err.message || 'Error al iniciar la subida');
+      setErrorMessage(msg);
+      addToast(msg, 'error');
     }
   };
 

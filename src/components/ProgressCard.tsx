@@ -1,6 +1,7 @@
 import React from 'react';
 import { Upload, Loader2, AlertTriangle, RotateCcw, ArrowRight, XCircle, FileAudio } from 'lucide-react';
 import { JobProgressEvent, JobStatus } from '../types';
+import { cleanErrorMessage } from '../services/api';
 
 interface ProgressCardProps {
   isUploading: boolean;
@@ -143,7 +144,7 @@ export const ProgressCard: React.FC<ProgressCardProps> = ({
             <div className="flex-1 min-w-0">
               <h4 className="text-sm font-bold text-rose-200">Error durante la operación</h4>
               <div className="text-xs text-rose-200/90 mt-1.5 whitespace-pre-line leading-relaxed">
-                {errorMessage || currentJobEvent?.error || 'Ocurrió un error inesperado al procesar o subir el audio.'}
+                {cleanErrorMessage(errorMessage || currentJobEvent?.error || 'Ocurrió un error inesperado al procesar o subir el audio.')}
               </div>
             </div>
           </div>
