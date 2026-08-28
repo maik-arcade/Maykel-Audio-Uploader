@@ -1,5 +1,33 @@
 [
   {
+    "id": "job_1787930352639_la26f0u",
+    "timestamp": 1787930353083,
+    "displayName": "Test Sine Wave",
+    "sourceType": "file",
+    "sourceUrl": "test_sine.mp3",
+    "creatorType": "User",
+    "creatorId": "52917562",
+    "speed": 2.33,
+    "amplification": -4,
+    "maxDuration": 400,
+    "status": "Failed",
+    "errorMessage": "🔑 API Key de Roblox inválida o expirada.\n\nComprueba tu clave en roblox.com/dashboard/credentials y asegúrate de haberla copiado completa."
+  },
+  {
+    "id": "job_1787930343575_6me928d",
+    "timestamp": 1787930343765,
+    "displayName": "Test Song",
+    "sourceType": "file",
+    "sourceUrl": "test.mp3",
+    "creatorType": "User",
+    "creatorId": "52917562",
+    "speed": 2.33,
+    "amplification": -4,
+    "maxDuration": 400,
+    "status": "Failed",
+    "errorMessage": "FFmpeg error (código 1):   9.100 /  3.  9.100\n  libpostproc    55.  9.100 / 55.  9.100\n[mp3 @ 0x564e383299c0] Format mp3 detected only with low score of 1, misdetection possible!\n[mp3 @ 0x564e383299c0] Failed to read frame size: Could not seek to 5119.\n/tmp/maykel_uploader/75c69d2397a6fc8ec5042951c7da67e9: Invalid argument\n"
+  },
+  {
     "id": "job_1787929983696_n5867nn",
     "timestamp": 1787929983880,
     "displayName": "Test Song",

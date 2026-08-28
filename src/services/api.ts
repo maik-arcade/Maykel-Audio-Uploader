@@ -737,6 +737,17 @@ function emitClientJobEvent(jobId: string, update: Partial<ClientJobState>) {
 export function cleanErrorMessage(raw: any): string {
   if (!raw) return 'Ocurrió un error inesperado al procesar la solicitud.';
   const str = typeof raw === 'string' ? raw : raw.message || raw.error || String(raw);
+  
+  if (
+    str.includes('🔑') ||
+    str.includes('🔒') ||
+    str.includes('Moderación') ||
+    str.includes('FFmpeg') ||
+    str.includes('Data incomplete')
+  ) {
+    return str;
+  }
+
   if (
     str.includes('<!DOCTYPE') ||
     str.includes('<html') ||
@@ -744,10 +755,10 @@ export function cleanErrorMessage(raw: any): string {
     str.includes('hosted on Netlify') ||
     str.includes('netlify-deploy')
   ) {
-    return '⚠️ El servidor backend no respondió en esta ruta. Procesando y subiendo el audio directamente...';
+    return 'El servidor de procesamiento no está disponible en este momento. Inténtalo de nuevo en unos segundos.';
   }
   if (str.includes('Load failed') || str.includes('Failed to fetch') || str.includes('NetworkError')) {
-    return '⚠️ Error de red o bloqueo del navegador al conectar con Roblox. Asegúrate de que tu clave API de Roblox Open Cloud esté activa y tenga habilitado el permiso de "Assets (Audio: Write)".';
+    return '⚠️ Error de conexión de red al comunicarse con el servidor o con Roblox. Comprueba tu conexión a internet y tu clave API.';
   }
   return str;
 }
