@@ -1189,18 +1189,8 @@ app.post('/api/roblox/verify', async (req, res) => {
           return res.status(401).json({
             success: false,
             error:
-              '🔑 API Key de Roblox inválida o expirada.\n\n' +
+              '🔑 API Key de Roblox inválida o no reconocida por Roblox.\n\n' +
               'Verifica tu clave en roblox.com/dashboard/credentials y asegúrate de haberla copiado completa sin espacios adicionales.',
-          });
-        }
-
-        if (keyTestRes.status === 403) {
-          return res.status(403).json({
-            success: false,
-            error:
-              '🔒 Permiso denegado por Roblox (403 Forbidden).\n\n' +
-              'Tu API Key tiene restricciones de IP activas o no tiene permisos de Open Cloud Assets.\n' +
-              'En roblox.com/dashboard/credentials, edita la clave para habilitar "Assets (Audio: Write)" y no restringir la IP.',
           });
         }
       } catch (keyErr: any) {
@@ -1937,24 +1927,31 @@ app.post('/api/upload', upload.single('audioFile'), async (req, res) => {
               resData?.error ||
               JSON.stringify(resData);
 
-            if (status === 401 || rawMessage.includes('Invalid API Key')) {
+            if (status === 401 || rawMessage.includes('Invalid API Key') || rawMessage.includes('UNAUTHENTICATED')) {
               throw new Error(
                 '🔑 API Key de Roblox inválida o expirada.\n\n' +
-                'Comprueba tu clave en roblox.com/dashboard/credentials y asegúrate de haberla copiado completa.'
+                '• Ve a https://create.roblox.com/dashboard/credentials\n' +
+                '• Copia tu API Key completa y asegúrate de que no haya espacios al inicio o final.'
               );
             }
 
-            if (status === 403 || rawMessage.includes('Asset creation is not permitted') || rawMessage.includes('PermissionDenied')) {
+            if (status === 403 || rawMessage.includes('Asset creation is not permitted') || rawMessage.includes('PermissionDenied') || rawMessage.includes('PERMISSION_DENIED')) {
+              const creatorTypeName = creatorType === 'User' ? 'Usuario Personal (User)' : 'Grupo (Group)';
               throw new Error(
-                '🔒 Permiso denegado por Roblox (403 Forbidden).\n\n' +
-                'Asegúrate de que tu API Key tenga activado el permiso "Assets" con operaciones de Lectura y Escritura (Read & Write), y acceso al Creator ID especificado.'
+                `🔒 Permiso denegado por Roblox (403 Forbidden).\n\n` +
+                `Detalle de Roblox: ${rawMessage}\n\n` +
+                `Por favor verifica en https://create.roblox.com/dashboard/credentials:\n` +
+                `1. En "Access Permissions", añade la API "Assets" y activa las casillas "Read" y "Write" (Lectura y Escritura).\n` +
+                `2. En "Creator / Asset owner", asegúrate de que la clave pertenezca a ${creatorTypeName} con ID: ${cleanCreatorId}.\n` +
+                `3. En "IP Restrictions", asegúrate de que esté vacía (sin restricciones de IP) para que el servidor pueda conectarse.`
               );
             }
 
             if (rawMessage.includes('The string did not match the expected pattern') || rawMessage.includes('INVALID_ARGUMENT')) {
               throw new Error(
                 '⚠️ Roblox rechazó los parámetros del audio.\n\n' +
-                `Motivo: Roblox requiere que el título contenga solo letras y números, y que el ${creatorType === 'User' ? 'User ID' : 'Group ID'} (${cleanCreatorId}) sea válido.`
+                `Detalle: ${rawMessage}\n` +
+                `Roblox requiere que el título contenga solo caracteres alfanuméricos válidos y que el ${creatorType === 'User' ? 'User ID' : 'Group ID'} (${cleanCreatorId}) exista en Roblox.`
               );
             }
 

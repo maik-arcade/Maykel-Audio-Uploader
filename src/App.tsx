@@ -224,12 +224,13 @@ export default function App() {
 
       if (response.success && response.profile) {
         setVerifiedProfile(response.profile);
+        setCreatorId(response.profile.id);
         setVerifyError(null);
         setFormErrors({});
 
         // Persist to local storage
         localStorage.setItem(STORAGE_KEYS.CREATOR_TYPE, creatorType);
-        localStorage.setItem(STORAGE_KEYS.CREATOR_ID, creatorId.trim());
+        localStorage.setItem(STORAGE_KEYS.CREATOR_ID, response.profile.id);
         localStorage.setItem(STORAGE_KEYS.API_KEY, apiKey.trim());
         localStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(response.profile));
 

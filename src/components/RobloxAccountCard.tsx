@@ -388,9 +388,28 @@ export const RobloxAccountCard: React.FC<RobloxAccountCardProps> = ({
             {errMap.apiKey ? (
               <p className="text-[11px] text-rose-400 font-medium mt-1">{errMap.apiKey}</p>
             ) : (
-              <p className="text-[11px] text-slate-500 mt-1">
-                Generada en Roblox Creator Hub con permiso <code>Asset: Read & Write</code>
-              </p>
+              <div className="mt-2 p-3 bg-blue-500/5 border border-blue-500/20 rounded-xl text-xs text-slate-300 space-y-1.5">
+                <div className="flex items-center justify-between font-semibold text-blue-300">
+                  <span className="flex items-center gap-1.5">
+                    <Info className="w-3.5 h-3.5" />
+                    <span>¿Cómo configurar tu API Key en Roblox?</span>
+                  </span>
+                  <a
+                    href="https://create.roblox.com/dashboard/credentials"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 underline font-medium"
+                  >
+                    <span>Abrir Creator Hub</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+                <ul className="text-[11px] text-slate-400 space-y-1 list-disc list-inside">
+                  <li><strong>Access Permissions:</strong> Añade la API <code>Assets</code> y marca <code>Write</code> (Escritura).</li>
+                  <li><strong>Creator:</strong> Selecciona tu <strong>Usuario</strong> o <strong>Grupo</strong> (debe coincidir con la selección arriba).</li>
+                  <li><strong>IP Restrictions:</strong> Déjala sin restricciones (vacía) para permitir la conexión desde el servidor.</li>
+                </ul>
+              </div>
             )}
           </div>
         </div>
