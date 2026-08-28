@@ -1,5 +1,33 @@
 [
   {
+    "id": "job_1787929983696_n5867nn",
+    "timestamp": 1787929983880,
+    "displayName": "Test Song",
+    "sourceType": "file",
+    "sourceUrl": "test.wav",
+    "creatorType": "User",
+    "creatorId": "52917562",
+    "speed": 2.33,
+    "amplification": -4,
+    "maxDuration": 400,
+    "status": "Failed",
+    "errorMessage": "FFmpeg error (código 1): ibavfilter     7.110.100 /  7.110.100\n  libswscale      5.  9.100 /  5.  9.100\n  libswresample   3.  9.100 /  3.  9.100\n  libpostproc    55.  9.100 / 55.  9.100\n[wav @ 0x557b6d32a9c0] no 'data' tag found\n/tmp/maykel_uploader/68fff876f46ecd7eec487214ac37514c: Invalid data found when processing input\n"
+  },
+  {
+    "id": "job_1787929515682_v3t9w9i",
+    "timestamp": 1787929515871,
+    "displayName": "test",
+    "sourceType": "file",
+    "sourceUrl": "test.mp3",
+    "creatorType": "User",
+    "creatorId": "123456",
+    "speed": 2.33,
+    "amplification": -4,
+    "maxDuration": 400,
+    "status": "Failed",
+    "errorMessage": "FFmpeg error (código 1):  libavdevice    58. 13.100 / 58. 13.100\n  libavfilter     7.110.100 /  7.110.100\n  libswscale      5.  9.100 /  5.  9.100\n  libswresample   3.  9.100 /  3.  9.100\n  libpostproc    55.  9.100 / 55.  9.100\n/tmp/maykel_uploader/58f66f8d93d6dbcf47d91334b5d7a944: Invalid data found when processing input\n"
+  },
+  {
     "id": "job_1787675161390_ohs48la",
     "timestamp": 1787675161964,
     "displayName": "Cancion de Prueba (2.33x!) - Maykel",

@@ -114,16 +114,10 @@ const activeJobs = new Map<string, ActiveJob>();
 const upload = multer({
   dest: TEMP_DIR,
   limits: {
-    fileSize: 60 * 1024 * 1024, // 60MB max
+    fileSize: 80 * 1024 * 1024, // 80MB max
   },
-  fileFilter: (_req, file, cb) => {
-    const allowedExtensions = ['.mp3', '.wav', '.ogg', '.flac'];
-    const ext = path.extname(file.originalname).toLowerCase();
-    if (allowedExtensions.includes(ext)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Use MP3, WAV, OGG or FLAC.'));
-    }
+  fileFilter: (_req, _file, cb) => {
+    cb(null, true);
   },
 });
 
@@ -189,12 +183,18 @@ app.all('/roblox-api-thumbnails/*', async (req, res) => {
 
 app.all('/roblox-api-opencloud/*', upload.single('fileContent'), async (req, res) => {
   try {
-    const subpath = req.url.replace('/roblox-api-opencloud', '');
-    const robloxUrl = `https://apis.roblox.com${subpath}`;
+    let subpath = req.url.replace('/roblox-api-opencloud', '');
+    if (!subpath.startsWith('/')) subpath = '/' + subpath;
+
+    // Ensure /assets/v1 prefix for opencloud assets endpoints if sent as /v1/...
+    let targetPath = subpath;
+    if (targetPath.startsWith('/v1/')) {
+      targetPath = '/assets' + targetPath;
+    }
+    const robloxUrl = `https://apis.roblox.com${targetPath}`;
     const apiKey = (req.headers['x-api-key'] as string) || '';
 
     if (req.file) {
-      const FormData = require('form-data');
       const form = new FormData();
       if (req.body.request) {
         form.append('request', req.body.request);
@@ -211,6 +211,7 @@ app.all('/roblox-api-opencloud/*', upload.single('fileContent'), async (req, res
         },
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
+        timeout: 60000,
         validateStatus: () => true,
       });
 
@@ -229,6 +230,7 @@ app.all('/roblox-api-opencloud/*', upload.single('fileContent'), async (req, res
         'x-api-key': apiKey,
         'Content-Type': req.headers['content-type'] || 'application/json',
       },
+      timeout: 30000,
       validateStatus: () => true,
     });
     res.status(response.status).json(response.data);

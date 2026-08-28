@@ -757,7 +757,8 @@ async function executeClientSideUpload(jobId: string, formData: FormData) {
   const creatorType = (formData.get('creatorType') as string) || 'User';
   let creatorId = ((formData.get('creatorId') as string) || '').trim();
   const apiKey = ((formData.get('apiKey') as string) || '').trim();
-  const displayName = ((formData.get('displayName') as string) || 'MAYKEL Audio').trim();
+  const customTitle = ((formData.get('customTitle') as string) || (formData.get('displayName') as string) || '').trim();
+  const displayName = customTitle || 'MAYKEL Audio';
   const audioFile = formData.get('audioFile') as File | null;
   const youtubeUrl = ((formData.get('youtubeUrl') as string) || '').trim();
   const speed = parseFloat((formData.get('speed') as string) || '2.33') || 2.33;
@@ -858,10 +859,10 @@ async function executeClientSideUpload(jobId: string, formData: FormData) {
       message: 'Enviando a Roblox Open Cloud Assets API...',
     });
 
-    // Try proxied endpoint first (bypasses browser CORS on Netlify and Express server), then direct
+    // Try proxied endpoint first (bypasses browser CORS on server and Netlify), then direct
     const candidateEndpoints = [
-      '/roblox-api-opencloud/v1/assets',
       '/roblox-api-opencloud/assets/v1/assets',
+      '/roblox-api-opencloud/v1/assets',
       'https://apis.roblox.com/assets/v1/assets',
     ];
 
@@ -895,10 +896,19 @@ async function executeClientSideUpload(jobId: string, formData: FormData) {
 
     if (!uploadRes.ok) {
       const errText = await uploadRes.text().catch(() => '');
-      if (uploadRes.status === 401 || uploadRes.status === 403) {
-        throw new Error('🔑 API Key de Roblox inválida, expirada o sin permisos de "Assets (Audio: Write)".');
+      let parsedMsg = '';
+      try {
+        const json = JSON.parse(errText);
+        parsedMsg = json.message || (json.errors && json.errors[0]?.message) || json.error || '';
+      } catch {}
+
+      if (uploadRes.status === 401 || parsedMsg.includes('Invalid API Key')) {
+        throw new Error('🔑 API Key de Roblox inválida o expirada.\nVerifica tu clave en roblox.com/dashboard/credentials');
       }
-      throw new Error(`Roblox Open Cloud error (${uploadRes.status}): ${cleanErrorMessage(errText)}`);
+      if (uploadRes.status === 403 || parsedMsg.includes('PermissionDenied') || parsedMsg.includes('Asset creation is not permitted')) {
+        throw new Error(`🔒 Permiso denegado por Roblox (403): Tu API Key no tiene permisos de "Assets (Audio: Write)" para el Creator ID ${creatorId}.`);
+      }
+      throw new Error(`Roblox Open Cloud error (${uploadRes.status}): ${parsedMsg || cleanErrorMessage(errText)}`);
     }
 
     const uploadData = await uploadRes.json();
