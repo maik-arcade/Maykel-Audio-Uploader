@@ -107,6 +107,9 @@ export default function App() {
     speed: number;
     amplification: number;
     customTitle?: string;
+    downloadUrl?: string;
+    blobUrl?: string;
+    blob?: Blob;
   } | null>(null);
   const [currentJobEvent, setCurrentJobEvent] = useState<JobProgressEvent | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -347,6 +350,9 @@ export default function App() {
         speed: settings.speed,
         amplification: settings.amplification,
         customTitle: customTitle.trim(),
+        downloadUrl: result.downloadUrl,
+        blobUrl: result.blobUrl,
+        blob: result.blob,
       });
 
       // Save item in history as a downloaded audio ready for manual upload
@@ -556,6 +562,9 @@ export default function App() {
               speed={manualDownloadResult.speed}
               amplification={manualDownloadResult.amplification}
               customTitle={manualDownloadResult.customTitle}
+              downloadUrl={manualDownloadResult.downloadUrl}
+              blobUrl={manualDownloadResult.blobUrl}
+              blob={manualDownloadResult.blob}
               onDismiss={() => setManualDownloadResult(null)}
               onReDownload={handleStartDownload}
               onShowToast={addToast}

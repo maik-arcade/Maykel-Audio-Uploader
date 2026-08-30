@@ -1658,7 +1658,30 @@ app.post('/api/preview-audio', upload.single('audioFile'), async (req, res) => {
   }
 });
 
-// Audio Download endpoint: processes audio with Roblox settings and triggers file download
+// Download Cache for direct browser downloading without iframe/blob limitations
+interface CachedDownload {
+  filePath: string;
+  fileName: string;
+  expiresAt: number;
+}
+const downloadCache = new Map<string, CachedDownload>();
+
+// Periodic cleanup of expired download cache files
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of downloadCache.entries()) {
+    if (entry.expiresAt < now) {
+      downloadCache.delete(id);
+      try {
+        if (fs.existsSync(entry.filePath)) {
+          fs.unlinkSync(entry.filePath);
+        }
+      } catch {}
+    }
+  }
+}, 5 * 60 * 1000);
+
+// Audio Download endpoint: processes audio with Roblox settings, caches for download, and supports JSON or stream response
 app.post('/api/download-audio', upload.single('audioFile'), async (req, res) => {
   const tempFiles: string[] = [];
   try {
@@ -1674,6 +1697,7 @@ app.post('/api/download-audio', upload.single('audioFile'), async (req, res) => 
       maxDuration = '400',
       customTitle = '',
       mode = 'processed',
+      format = 'json', // 'json' returns downloadUrl, 'stream' pipes directly
     } = req.body;
 
     const isOriginalMode = mode === 'original';
@@ -1708,8 +1732,8 @@ app.post('/api/download-audio', upload.single('audioFile'), async (req, res) => 
         .substring(0, 40) || 'audio_roblox_ready';
 
     const finalFileName = `${sanitizedFilename}_${speedNum > 1.05 ? `${speedNum.toFixed(2)}x_` : ''}roblox_ready.mp3`;
-    const outputDownloadPath = path.join(TEMP_DIR, `dl_${Date.now()}_${Math.random().toString(36).substring(7)}.mp3`);
-    tempFiles.push(outputDownloadPath);
+    const downloadId = `dl_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    const outputDownloadPath = path.join(TEMP_DIR, `${downloadId}.mp3`);
 
     await processAudioWithFFmpeg({
       inputPath,
@@ -1724,27 +1748,141 @@ app.post('/api/download-audio', upload.single('audioFile'), async (req, res) => 
     }
 
     const stat = fs.statSync(outputDownloadPath);
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Length', stat.size);
-    res.setHeader('Content-Disposition', `attachment; filename="${finalFileName}"`);
-    res.setHeader('Cache-Control', 'no-cache');
 
-    const readStream = fs.createReadStream(outputDownloadPath);
-    readStream.pipe(res);
+    // Save in download cache for 1 hour
+    downloadCache.set(downloadId, {
+      filePath: outputDownloadPath,
+      fileName: finalFileName,
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    });
 
-    res.on('finish', () => {
-      cleanupFiles(tempFiles);
-    });
-    res.on('close', () => {
-      cleanupFiles(tempFiles);
-    });
-    readStream.on('error', () => {
-      cleanupFiles(tempFiles);
+    // Cleanup input temp files
+    cleanupFiles(tempFiles);
+
+    // If client requested stream directly
+    if (format === 'stream') {
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Content-Length', stat.size);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(finalFileName)}"`);
+      res.setHeader('Cache-Control', 'no-cache');
+      const readStream = fs.createReadStream(outputDownloadPath);
+      readStream.pipe(res);
+      return;
+    }
+
+    // Default: return JSON with direct download URLs
+    const downloadUrl = `/api/download-file/${downloadId}/${encodeURIComponent(finalFileName)}`;
+    res.json({
+      success: true,
+      downloadId,
+      downloadUrl,
+      fileName: finalFileName,
+      sizeBytes: stat.size,
+      speed: speedNum,
+      amplification: ampNum,
+      maxDuration: maxDurNum,
     });
   } catch (err: any) {
     cleanupFiles(tempFiles);
     console.error('Audio download error:', err);
     res.status(500).json({ error: err.message || 'Error procesando la descarga de audio' });
+  }
+});
+
+// Direct file download handler by ID
+app.get('/api/download-file/:downloadId/:filename?', (req, res) => {
+  const { downloadId } = req.params;
+  const entry = downloadCache.get(downloadId);
+
+  if (!entry || !fs.existsSync(entry.filePath)) {
+    return res.status(404).send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>Descarga no encontrada</title></head>
+        <body style="font-family: sans-serif; background: #0A0E17; color: #fff; text-align: center; padding: 50px;">
+          <h2>El archivo de audio ha expirado o no existe</h2>
+          <p>Por favor regresa a la aplicación y vuelve a presionar Descargar MP3.</p>
+          <a href="/" style="color: #38bdf8;">Volver a la aplicación</a>
+        </body>
+      </html>
+    `);
+  }
+
+  const stat = fs.statSync(entry.filePath);
+  const encodedName = encodeURIComponent(entry.fileName);
+
+  res.setHeader('Content-Type', 'audio/mpeg');
+  res.setHeader('Content-Length', stat.size);
+  res.setHeader('Content-Disposition', `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`);
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+
+  const stream = fs.createReadStream(entry.filePath);
+  stream.pipe(res);
+});
+
+// GET direct download route (for standard HTML link clicks with YouTube URLs)
+app.get('/api/download-direct', async (req, res) => {
+  const tempFiles: string[] = [];
+  try {
+    const { url, speed = '2.33', amplification = '-4', maxDuration = '400', title = '' } = req.query;
+    if (!url || typeof url !== 'string') {
+      return res.status(400).send('Falta el parámetro de URL.');
+    }
+
+    const ffmpegOk = await checkFFmpeg();
+    if (!ffmpegOk) {
+      return res.status(500).send('FFmpeg no está disponible.');
+    }
+
+    const speedNum = Math.max(0.5, Math.min(4.0, parseFloat(speed as string) || 2.33));
+    const ampNum = Math.max(-30, Math.min(30, parseFloat(amplification as string) || -4));
+    const maxDurNum = Math.max(5, Math.min(600, parseFloat(maxDuration as string) || 400));
+
+    const ytTempPath = path.join(TEMP_DIR, `yt_direct_${Date.now()}_${Math.random().toString(36).substring(7)}.raw`);
+    tempFiles.push(ytTempPath);
+    const fetchedTitle = await downloadYouTubeAudio(url.trim(), ytTempPath);
+    const baseFileName = (title as string)?.trim() || fetchedTitle || 'audio_roblox_ready';
+
+    const sanitizedFilename =
+      baseFileName
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .replace(/_+/g, '_')
+        .substring(0, 40) || 'audio_roblox_ready';
+
+    const finalFileName = `${sanitizedFilename}_${speedNum > 1.05 ? `${speedNum.toFixed(2)}x_` : ''}roblox_ready.mp3`;
+    const outputDownloadPath = path.join(TEMP_DIR, `direct_${Date.now()}_${Math.random().toString(36).substring(7)}.mp3`);
+    tempFiles.push(outputDownloadPath);
+
+    await processAudioWithFFmpeg({
+      inputPath: ytTempPath,
+      outputPath: outputDownloadPath,
+      speed: speedNum,
+      amplification: ampNum,
+      maxDuration: maxDurNum,
+    });
+
+    if (!fs.existsSync(outputDownloadPath)) {
+      throw new Error('No se pudo generar el archivo MP3.');
+    }
+
+    const stat = fs.statSync(outputDownloadPath);
+    const encodedName = encodeURIComponent(finalFileName);
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', stat.size);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`);
+
+    const readStream = fs.createReadStream(outputDownloadPath);
+    readStream.pipe(res);
+
+    res.on('finish', () => cleanupFiles(tempFiles));
+    res.on('close', () => cleanupFiles(tempFiles));
+    readStream.on('error', () => cleanupFiles(tempFiles));
+  } catch (err: any) {
+    cleanupFiles(tempFiles);
+    res.status(500).send(`Error generando descarga: ${err.message}`);
   }
 });
 
