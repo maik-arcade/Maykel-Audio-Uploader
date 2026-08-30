@@ -1658,6 +1658,96 @@ app.post('/api/preview-audio', upload.single('audioFile'), async (req, res) => {
   }
 });
 
+// Audio Download endpoint: processes audio with Roblox settings and triggers file download
+app.post('/api/download-audio', upload.single('audioFile'), async (req, res) => {
+  const tempFiles: string[] = [];
+  try {
+    const ffmpegOk = await checkFFmpeg();
+    if (!ffmpegOk) {
+      return res.status(500).json({ error: 'FFmpeg no está configurado en el servidor.' });
+    }
+
+    const {
+      youtubeUrl,
+      speed = '2.33',
+      amplification = '-4',
+      maxDuration = '400',
+      customTitle = '',
+      mode = 'processed',
+    } = req.body;
+
+    const isOriginalMode = mode === 'original';
+    const speedNum = isOriginalMode ? 1.0 : Math.max(0.5, Math.min(4.0, parseFloat(speed) || 2.33));
+    const ampNum = isOriginalMode ? 0 : Math.max(-30, Math.min(30, parseFloat(amplification) || -4));
+    const maxDurNum = Math.max(5, Math.min(600, parseFloat(maxDuration) || 400));
+
+    let inputPath = '';
+    let baseFileName = 'audio_roblox_ready';
+
+    if (req.file) {
+      inputPath = req.file.path;
+      tempFiles.push(inputPath);
+      const parsed = path.parse(req.file.originalname);
+      baseFileName = customTitle?.trim() || parsed.name || 'audio_roblox_ready';
+    } else if (youtubeUrl && typeof youtubeUrl === 'string' && youtubeUrl.trim()) {
+      const ytTempPath = path.join(TEMP_DIR, `yt_dl_${Date.now()}_${Math.random().toString(36).substring(7)}.raw`);
+      tempFiles.push(ytTempPath);
+      const fetchedTitle = await downloadYouTubeAudio(youtubeUrl.trim(), ytTempPath);
+      inputPath = ytTempPath;
+      baseFileName = customTitle?.trim() || fetchedTitle || 'audio_roblox_ready';
+    } else {
+      return res.status(400).json({ error: 'No se proporcionó archivo de audio ni enlace de YouTube.' });
+    }
+
+    const sanitizedFilename =
+      baseFileName
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .replace(/_+/g, '_')
+        .substring(0, 40) || 'audio_roblox_ready';
+
+    const finalFileName = `${sanitizedFilename}_${speedNum > 1.05 ? `${speedNum.toFixed(2)}x_` : ''}roblox_ready.mp3`;
+    const outputDownloadPath = path.join(TEMP_DIR, `dl_${Date.now()}_${Math.random().toString(36).substring(7)}.mp3`);
+    tempFiles.push(outputDownloadPath);
+
+    await processAudioWithFFmpeg({
+      inputPath,
+      outputPath: outputDownloadPath,
+      speed: speedNum,
+      amplification: ampNum,
+      maxDuration: maxDurNum,
+    });
+
+    if (!fs.existsSync(outputDownloadPath)) {
+      throw new Error('El archivo MP3 para descargar no se generó correctamente.');
+    }
+
+    const stat = fs.statSync(outputDownloadPath);
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', stat.size);
+    res.setHeader('Content-Disposition', `attachment; filename="${finalFileName}"`);
+    res.setHeader('Cache-Control', 'no-cache');
+
+    const readStream = fs.createReadStream(outputDownloadPath);
+    readStream.pipe(res);
+
+    res.on('finish', () => {
+      cleanupFiles(tempFiles);
+    });
+    res.on('close', () => {
+      cleanupFiles(tempFiles);
+    });
+    readStream.on('error', () => {
+      cleanupFiles(tempFiles);
+    });
+  } catch (err: any) {
+    cleanupFiles(tempFiles);
+    console.error('Audio download error:', err);
+    res.status(500).json({ error: err.message || 'Error procesando la descarga de audio' });
+  }
+});
+
 // SSE endpoint for job status stream
 app.get('/api/jobs/:jobId/events', (req, res) => {
   const { jobId } = req.params;

@@ -22,6 +22,7 @@ import {
   Radio,
   Eye,
   EyeOff,
+  Download,
 } from 'lucide-react';
 import { UploadSettings, AudioInfo } from '../types';
 import { fetchAudioInfo, requestAudioPreview } from '../services/api';
@@ -36,6 +37,8 @@ interface AudioSourceCardProps {
   settings: UploadSettings;
   onShowToast: (msg: string, type?: 'info' | 'error' | 'success') => void;
   onDetectedInfoChange?: (info: AudioInfo | null) => void;
+  onDownloadAudio?: () => void;
+  isDownloading?: boolean;
 }
 
 const DIRECT_AUDIO_REGEX = /\.(mp3|wav|ogg|flac|m4a|aac)(\?.*)?$/i;
@@ -76,6 +79,8 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
   settings,
   onShowToast,
   onDetectedInfoChange,
+  onDownloadAudio,
+  isDownloading = false,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -724,6 +729,21 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
                   <span>Usar nombre</span>
                 </button>
               )}
+
+              {/* Quick Action: Direct Download MP3 */}
+              {onDownloadAudio && (
+                <button
+                  type="button"
+                  id="header-download-audio-btn"
+                  onClick={onDownloadAudio}
+                  disabled={isDownloading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-md shadow-emerald-600/20 transition-all flex-shrink-0 disabled:opacity-50"
+                  title="Descargar esta canción convertida en MP3 a velocidad 2.33x"
+                >
+                  {isDownloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                  <span>Descargar MP3</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -844,6 +864,21 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
                     title="Volver a generar audio con los efectos actuales"
                   >
                     <RefreshCw className={`w-4 h-4 ${isAudioLoading ? 'animate-spin' : ''}`} />
+                  </button>
+                )}
+
+                {/* Direct Download button right in the player */}
+                {onDownloadAudio && (
+                  <button
+                    type="button"
+                    id="player-download-mp3-btn"
+                    onClick={onDownloadAudio}
+                    disabled={isDownloading}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-bold transition-all flex-shrink-0 disabled:opacity-50"
+                    title="Descargar este audio procesado (.mp3 listo para Roblox)"
+                  >
+                    {isDownloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5 text-emerald-400" />}
+                    <span className="hidden sm:inline">Descargar MP3</span>
                   </button>
                 )}
 

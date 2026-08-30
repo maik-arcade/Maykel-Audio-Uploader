@@ -1221,6 +1221,111 @@ export async function requestAudioPreview(formData: FormData): Promise<string> {
   }
 }
 
+// Download MP3 audio ready for Roblox manual upload
+export async function downloadRobloxReadyAudio(params: {
+  audioFile?: File | null;
+  youtubeUrl?: string;
+  speed: number;
+  amplification: number;
+  maxDuration: number;
+  customTitle?: string;
+}): Promise<{ fileName: string; sizeBytes?: number; blobUrl?: string }> {
+  const { audioFile, youtubeUrl, speed, amplification, maxDuration, customTitle } = params;
+
+  // 1. Try server backend first (supports YouTube and server FFmpeg)
+  try {
+    const formData = new FormData();
+    if (audioFile) {
+      formData.append('audioFile', audioFile);
+    } else if (youtubeUrl && youtubeUrl.trim()) {
+      formData.append('youtubeUrl', youtubeUrl.trim());
+    } else {
+      throw new Error('Debes seleccionar un archivo de audio o ingresar un enlace.');
+    }
+
+    formData.append('speed', speed.toString());
+    formData.append('amplification', amplification.toString());
+    formData.append('maxDuration', maxDuration.toString());
+    if (customTitle && customTitle.trim()) {
+      formData.append('customTitle', customTitle.trim());
+    }
+
+    const res = await fetch('/api/download-audio', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: formData,
+    });
+
+    if (res.ok) {
+      const blob = await res.blob();
+      // Extract filename from header if present
+      const disposition = res.headers.get('content-disposition') || '';
+      let fileName = 'audio_roblox_ready.mp3';
+      const match = disposition.match(/filename="?([^";]+)"?/);
+      if (match && match[1]) {
+        fileName = match[1];
+      } else if (customTitle && customTitle.trim()) {
+        fileName = `${customTitle.trim().replace(/[^a-zA-Z0-9_-]/g, '_')}.mp3`;
+      } else if (audioFile) {
+        fileName = `${audioFile.name.replace(/\.[^/.]+$/, '')}_roblox_ready.mp3`;
+      }
+
+      // Trigger browser download
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      return { fileName, sizeBytes: blob.size, blobUrl };
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const errData = await res.json().catch(() => ({}));
+      if (errData.error || errData.message) {
+        throw new Error(errData.error || errData.message);
+      }
+    }
+  } catch (backendErr: any) {
+    // If it's a YouTube link, bubble the backend error
+    if (!audioFile && youtubeUrl) {
+      throw backendErr;
+    }
+  }
+
+  // 2. Client-side fallback if audioFile is available (100% offline & fast)
+  if (audioFile) {
+    try {
+      const mp3Blob = await processAudioToMp3Blob(audioFile, {
+        speed,
+        amplification,
+        maxDuration,
+      });
+
+      const baseName = customTitle?.trim() || audioFile.name.replace(/\.[^/.]+$/, '');
+      const safeName = baseName.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const fileName = `${safeName}_${speed > 1.05 ? `${speed.toFixed(2)}x_` : ''}roblox_ready.mp3`;
+
+      const blobUrl = URL.createObjectURL(mp3Blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      return { fileName, sizeBytes: mp3Blob.size, blobUrl };
+    } catch (clientErr: any) {
+      throw new Error(`Error al procesar el audio localmente: ${clientErr.message}`);
+    }
+  }
+
+  throw new Error('No se pudo procesar la descarga del audio.');
+}
+
 export async function checkRobloxModeration(params: {
   assetId: string;
   operationId?: string;

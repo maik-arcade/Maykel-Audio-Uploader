@@ -6,6 +6,7 @@ import { AudioSourceCard } from './components/AudioSourceCard';
 import { AdvancedSettingsCard } from './components/AdvancedSettingsCard';
 import { ProgressCard } from './components/ProgressCard';
 import { ResultCard } from './components/ResultCard';
+import { ManualUploadCard } from './components/ManualUploadCard';
 import { HistoryTable } from './components/HistoryTable';
 import { AudioPreviewModal } from './components/AudioPreviewModal';
 import { HelpModal } from './components/HelpModal';
@@ -34,6 +35,8 @@ import {
   fetchAuthSession,
   robloxLogout,
   cleanErrorMessage,
+  downloadRobloxReadyAudio,
+  saveLocalHistoryItem,
 } from './services/api';
 
 const STORAGE_KEYS = {
@@ -97,6 +100,14 @@ export default function App() {
 
   // 4. Job & Upload state
   const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [isDownloading, setIsDownloading] = useState<boolean>(false);
+  const [manualDownloadResult, setManualDownloadResult] = useState<{
+    fileName: string;
+    fileSizeBytes?: number;
+    speed: number;
+    amplification: number;
+    customTitle?: string;
+  } | null>(null);
   const [currentJobEvent, setCurrentJobEvent] = useState<JobProgressEvent | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [latestResult, setLatestResult] = useState<JobProgressEvent | null>(null);
@@ -308,6 +319,73 @@ export default function App() {
     }
   };
 
+  // Start Manual Download Flow (100% Reliable Roblox Upload Alternative)
+  const handleStartDownload = async () => {
+    const hasAudio = selectedFile || (youtubeUrl && youtubeUrl.trim());
+    if (!hasAudio) {
+      setErrorMessage('Debes seleccionar un archivo de audio o ingresar un enlace de YouTube antes de descargar.');
+      addToast('Falta el archivo o enlace de audio', 'error');
+      return;
+    }
+
+    setIsDownloading(true);
+    setErrorMessage(null);
+
+    try {
+      const result = await downloadRobloxReadyAudio({
+        audioFile: selectedFile,
+        youtubeUrl: youtubeUrl.trim(),
+        speed: settings.speed,
+        amplification: settings.amplification,
+        maxDuration: settings.maxDuration,
+        customTitle: customTitle.trim(),
+      });
+
+      setManualDownloadResult({
+        fileName: result.fileName,
+        fileSizeBytes: result.sizeBytes,
+        speed: settings.speed,
+        amplification: settings.amplification,
+        customTitle: customTitle.trim(),
+      });
+
+      // Save item in history as a downloaded audio ready for manual upload
+      const historyItem: UploadHistoryItem = {
+        id: `download_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+        timestamp: Date.now(),
+        displayName: customTitle.trim() || result.fileName.replace(/\.mp3$/i, ''),
+        sourceType: selectedFile ? 'file' : detectedAudioInfo?.source || 'youtube',
+        sourceUrl: youtubeUrl || undefined,
+        thumbnail: detectedAudioInfo?.thumbnail || undefined,
+        creatorType: creatorType,
+        creatorId: creatorId || (authUser ? authUser.id : 'Manual'),
+        speed: settings.speed,
+        amplification: settings.amplification,
+        maxDuration: settings.maxDuration,
+        status: 'Completed',
+        assetId: 'Descarga Manual',
+        moderationState: 'MODERATION_STATE_APPROVED',
+      };
+      saveLocalHistoryItem(historyItem);
+      loadHistoryData();
+
+      addToast(`✓ ¡Audio descargado! Listo para subir a Roblox`, 'success');
+      try {
+        confetti({
+          particleCount: 80,
+          spread: 70,
+          origin: { y: 0.6 },
+        });
+      } catch {}
+    } catch (err: any) {
+      const msg = cleanErrorMessage(err.message || 'Error al procesar la descarga del audio');
+      setErrorMessage(msg);
+      addToast(msg, 'error');
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
   // Start Upload Flow
   const handleStartUpload = async () => {
     const errors: { creatorId?: string; apiKey?: string } = {};
@@ -459,7 +537,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Success / Result Showcase Banner */}
+          {/* Success / Result Showcase Banner (Automated Roblox Upload) */}
           {latestResult && (
             <ResultCard
               jobEvent={latestResult}
@@ -467,6 +545,20 @@ export default function App() {
               onDismiss={() => setLatestResult(null)}
               onShowToast={addToast}
               onModerationUpdated={loadHistoryData}
+            />
+          )}
+
+          {/* Manual Download Result Showcase Banner (Direct MP3 & Roblox Creator Hub) */}
+          {manualDownloadResult && (
+            <ManualUploadCard
+              fileName={manualDownloadResult.fileName}
+              fileSizeBytes={manualDownloadResult.fileSizeBytes}
+              speed={manualDownloadResult.speed}
+              amplification={manualDownloadResult.amplification}
+              customTitle={manualDownloadResult.customTitle}
+              onDismiss={() => setManualDownloadResult(null)}
+              onReDownload={handleStartDownload}
+              onShowToast={addToast}
             />
           )}
 
@@ -509,6 +601,8 @@ export default function App() {
                 settings={settings}
                 onShowToast={addToast}
                 onDetectedInfoChange={setDetectedAudioInfo}
+                onDownloadAudio={handleStartDownload}
+                isDownloading={isDownloading}
               />
             </div>
 
@@ -524,12 +618,14 @@ export default function App() {
 
               <ProgressCard
                 isUploading={isUploading}
+                isDownloading={isDownloading}
                 currentJobEvent={currentJobEvent}
                 errorMessage={errorMessage}
                 onStartUpload={handleStartUpload}
+                onStartDownload={handleStartDownload}
                 onRetry={handleRetry}
                 onDismissError={handleDismissError}
-                canUpload={!isUploading}
+                canUpload={!isUploading && !isDownloading}
               />
             </div>
           </div>
