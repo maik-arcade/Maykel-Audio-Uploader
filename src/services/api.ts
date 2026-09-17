@@ -1221,14 +1221,16 @@ export async function requestAudioPreview(formData: FormData): Promise<string> {
   }
 }
 
-// Helper to force browser to save a file/blob
+// Helper to force browser to save a file/blob safely on both mobile and desktop
 export function triggerBrowserSave(urlOrBlob: string | Blob, fileName: string) {
   try {
-    let url = typeof urlOrBlob === 'string' ? urlOrBlob : URL.createObjectURL(urlOrBlob);
+    const isBlob = typeof urlOrBlob !== 'string';
+    const url = isBlob ? URL.createObjectURL(urlOrBlob) : urlOrBlob;
     const a = document.createElement('a');
     a.href = url;
     a.download = fileName;
-    a.target = '_blank';
+    // CRITICAL: Do NOT set target="_blank".
+    // On iOS Safari and mobile Chrome, target="_blank" opens a new tab and suspends or crashes the current page.
     a.rel = 'noopener noreferrer';
     a.style.display = 'none';
     document.body.appendChild(a);
@@ -1236,11 +1238,11 @@ export function triggerBrowserSave(urlOrBlob: string | Blob, fileName: string) {
     setTimeout(() => {
       try {
         document.body.removeChild(a);
-        if (typeof urlOrBlob !== 'string') {
+        if (isBlob) {
           URL.revokeObjectURL(url);
         }
       } catch {}
-    }, 2000);
+    }, 1500);
   } catch (e) {
     console.warn('Direct click download failed:', e);
   }
@@ -1296,21 +1298,11 @@ export async function downloadRobloxReadyAudio(params: {
         const downloadUrl = data.downloadUrl;
         const sizeBytes = data.sizeBytes;
 
-        // Fetch blob in background for native file sharing (iOS Files / Android)
-        let blobUrl: string | undefined;
-        let blob: Blob | undefined;
-        try {
-          const blobRes = await fetch(downloadUrl);
-          if (blobRes.ok) {
-            blob = await blobRes.blob();
-            blobUrl = URL.createObjectURL(blob);
-          }
-        } catch {}
-
-        // Trigger browser save
+        // Trigger native download immediately
+        // Avoid pre-fetching multi-megabyte blobs into JS memory here to protect mobile RAM
         triggerBrowserSave(downloadUrl, fileName);
 
-        return { fileName, sizeBytes, downloadUrl, blobUrl, blob };
+        return { fileName, sizeBytes, downloadUrl };
       } else {
         // Direct stream received
         const blob = await res.blob();

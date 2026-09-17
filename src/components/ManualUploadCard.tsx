@@ -77,8 +77,17 @@ export const ManualUploadCard: React.FC<ManualUploadCardProps> = ({
   const handleShareOrSaveToFiles = async () => {
     try {
       setIsSharing(true);
-      if (blob && navigator.canShare) {
-        const file = new File([blob], fileName, { type: 'audio/mpeg' });
+      let shareBlob = blob;
+      if (!shareBlob && downloadUrl) {
+        // Fetch blob only on-demand when the user explicitly requests to save/share
+        const res = await fetch(downloadUrl);
+        if (res.ok) {
+          shareBlob = await res.blob();
+        }
+      }
+
+      if (shareBlob && navigator.canShare) {
+        const file = new File([shareBlob], fileName, { type: 'audio/mpeg' });
         if (navigator.canShare({ files: [file] })) {
           await navigator.share({
             files: [file],
@@ -104,7 +113,7 @@ export const ManualUploadCard: React.FC<ManualUploadCardProps> = ({
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   };
 
-  const canNativeShare = typeof navigator !== 'undefined' && !!navigator.share && !!blob;
+  const canNativeShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (!!blob || !!downloadUrl);
 
   return (
     <div

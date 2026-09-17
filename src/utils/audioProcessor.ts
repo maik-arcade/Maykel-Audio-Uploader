@@ -1,9 +1,13 @@
 import { Mp3Encoder } from '@breezystack/lamejs';
 
 // Client-side Web Audio API processor for instant zero-latency preview and client-side Roblox uploads
-// Handles speed modification, volume amplification (dB), duration trimming, and MP3 / WAV rendering
+// Optimized for mobile devices: non-blocking async loops with cooperative yielding to prevent freezes & crashes
 
-export function audioBufferToMp3(buffer: AudioBuffer, kbps: number = 192): Blob {
+export async function audioBufferToMp3(
+  buffer: AudioBuffer,
+  kbps: number = 192,
+  onProgress?: (ratio: number) => void
+): Promise<Blob> {
   const channels = Math.min(2, Math.max(1, buffer.numberOfChannels));
   const sampleRate = buffer.sampleRate;
   const mp3encoder = new Mp3Encoder(channels, sampleRate, kbps);
@@ -17,6 +21,7 @@ export function audioBufferToMp3(buffer: AudioBuffer, kbps: number = 192): Blob 
   const leftInt16 = new Int16Array(length);
   const rightInt16 = new Int16Array(length);
 
+  // Convert float to 16-bit PCM in chunks, yielding to keep UI responsive on phones
   for (let i = 0; i < length; i++) {
     const sL = Math.max(-1, Math.min(1, left[i]));
     leftInt16[i] = sL < 0 ? sL * 0x8000 : sL * 0x7fff;
@@ -24,8 +29,13 @@ export function audioBufferToMp3(buffer: AudioBuffer, kbps: number = 192): Blob 
       const sR = Math.max(-1, Math.min(1, right[i]));
       rightInt16[i] = sR < 0 ? sR * 0x8000 : sR * 0x7fff;
     }
+    // Yield every 200,000 samples to keep phone browser responsive
+    if (i > 0 && i % 200000 === 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
   }
 
+  let chunkCount = 0;
   for (let i = 0; i < length; i += sampleBlockSize) {
     const leftChunk = leftInt16.subarray(i, i + sampleBlockSize);
     let mp3buf: Int8Array | Uint8Array;
@@ -37,6 +47,14 @@ export function audioBufferToMp3(buffer: AudioBuffer, kbps: number = 192): Blob 
     }
     if (mp3buf && mp3buf.length > 0) {
       mp3Data.push(new Uint8Array(mp3buf));
+    }
+    chunkCount++;
+    // Yield periodically to let the browser breathe and prevent mobile tab crashes
+    if (chunkCount % 40 === 0) {
+      if (onProgress) {
+        onProgress(Math.min(1, i / length));
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
   }
 
@@ -166,10 +184,11 @@ export async function processAudioToMp3Blob(
     speed?: number;
     amplification?: number; // in dB
     maxDuration?: number; // in seconds
+    onProgress?: (ratio: number) => void;
   }
 ): Promise<Blob> {
   const renderedBuffer = await renderProcessedAudioBuffer(audioSource, options);
-  return audioBufferToMp3(renderedBuffer, 192);
+  return await audioBufferToMp3(renderedBuffer, 192, options.onProgress);
 }
 
 export async function processAudioInBrowser(
@@ -180,8 +199,12 @@ export async function processAudioInBrowser(
     maxDuration?: number; // in seconds
   }
 ): Promise<string> {
-  const renderedBuffer = await renderProcessedAudioBuffer(audioSource, options);
+  // Cap preview in browser to 35 seconds max to prevent mobile memory pressure
+  const previewMax = Math.min(options.maxDuration || 35, 35);
+  const renderedBuffer = await renderProcessedAudioBuffer(audioSource, {
+    ...options,
+    maxDuration: previewMax,
+  });
   const wavBlob = audioBufferToWav(renderedBuffer);
   return URL.createObjectURL(wavBlob);
 }
-
