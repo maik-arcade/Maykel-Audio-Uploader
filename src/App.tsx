@@ -46,6 +46,13 @@ const STORAGE_KEYS = {
   PROFILE: 'maykel_roblox_profile',
 };
 
+const SESSION_KEYS = {
+  YOUTUBE_URL: 'maykel_session_youtube_url',
+  CUSTOM_TITLE: 'maykel_session_custom_title',
+  SETTINGS: 'maykel_session_settings',
+  MANUAL_RESULT: 'maykel_session_manual_result',
+};
+
 const DEFAULT_GROUP_CONFIG: RobloxGroupConfig = {
   groupId: '52917562',
   groupName: "Maykel's Studio",
@@ -85,17 +92,37 @@ export default function App() {
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const [formErrors, setFormErrors] = useState<{ creatorId?: string; apiKey?: string }>({});
 
-  // 2. Audio source state
-  const [youtubeUrl, setYoutubeUrl] = useState<string>('');
+  // 2. Audio source state (persisted across tab suspensions)
+  const [youtubeUrl, setYoutubeUrl] = useState<string>(() => {
+    try {
+      return sessionStorage.getItem(SESSION_KEYS.YOUTUBE_URL) || '';
+    } catch {
+      return '';
+    }
+  });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [customTitle, setCustomTitle] = useState<string>('');
+  const [customTitle, setCustomTitle] = useState<string>(() => {
+    try {
+      return sessionStorage.getItem(SESSION_KEYS.CUSTOM_TITLE) || '';
+    } catch {
+      return '';
+    }
+  });
   const [detectedAudioInfo, setDetectedAudioInfo] = useState<any>(null);
 
   // 3. Audio transformation settings
-  const [settings, setSettings] = useState<UploadSettings>({
-    speed: 2.33,
-    amplification: -4,
-    maxDuration: 400,
+  const [settings, setSettings] = useState<UploadSettings>(() => {
+    try {
+      const saved = sessionStorage.getItem(SESSION_KEYS.SETTINGS);
+      if (saved) {
+        return { speed: 2.33, amplification: -4, maxDuration: 400, ...JSON.parse(saved) };
+      }
+    } catch {}
+    return {
+      speed: 2.33,
+      amplification: -4,
+      maxDuration: 400,
+    };
   });
 
   // 4. Job & Upload state
@@ -110,7 +137,18 @@ export default function App() {
     downloadUrl?: string;
     blobUrl?: string;
     blob?: Blob;
-  } | null>(null);
+  } | null>(() => {
+    try {
+      const saved = sessionStorage.getItem(SESSION_KEYS.MANUAL_RESULT);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.fileName && parsed.downloadUrl) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return null;
+  });
   const [currentJobEvent, setCurrentJobEvent] = useState<JobProgressEvent | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [latestResult, setLatestResult] = useState<JobProgressEvent | null>(null);
@@ -119,6 +157,43 @@ export default function App() {
   const [previewAudioUrl, setPreviewAudioUrl] = useState<string | null>(null);
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState<boolean>(false);
   const [isPreviewLoading, setIsPreviewLoading] = useState<boolean>(false);
+
+  // Sync audio form state to sessionStorage
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(SESSION_KEYS.YOUTUBE_URL, youtubeUrl);
+    } catch {}
+  }, [youtubeUrl]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(SESSION_KEYS.CUSTOM_TITLE, customTitle);
+    } catch {}
+  }, [customTitle]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(SESSION_KEYS.SETTINGS, JSON.stringify(settings));
+    } catch {}
+  }, [settings]);
+
+  useEffect(() => {
+    try {
+      if (manualDownloadResult && manualDownloadResult.downloadUrl) {
+        const serializable = {
+          fileName: manualDownloadResult.fileName,
+          fileSizeBytes: manualDownloadResult.fileSizeBytes,
+          speed: manualDownloadResult.speed,
+          amplification: manualDownloadResult.amplification,
+          customTitle: manualDownloadResult.customTitle,
+          downloadUrl: manualDownloadResult.downloadUrl,
+        };
+        sessionStorage.setItem(SESSION_KEYS.MANUAL_RESULT, JSON.stringify(serializable));
+      } else if (!manualDownloadResult) {
+        sessionStorage.removeItem(SESSION_KEYS.MANUAL_RESULT);
+      }
+    } catch {}
+  }, [manualDownloadResult]);
 
   // 6. System & History state
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
@@ -299,6 +374,11 @@ export default function App() {
       return;
     }
 
+    if (selectedFile && selectedFile.size > 30 * 1024 * 1024) {
+      addToast('El archivo supera el límite de 30 MB.', 'error');
+      return;
+    }
+
     setIsPreviewLoading(true);
     try {
       const formData = new FormData();
@@ -308,11 +388,17 @@ export default function App() {
         formData.append('youtubeUrl', youtubeUrl.trim());
       }
 
+      formData.append('mode', 'processed');
       formData.append('speed', settings.speed.toString());
       formData.append('amplification', settings.amplification.toString());
       formData.append('maxDuration', settings.maxDuration.toString());
 
       const url = await requestAudioPreview(formData);
+      if (previewAudioUrl && previewAudioUrl.startsWith('blob:')) {
+        try {
+          URL.revokeObjectURL(previewAudioUrl);
+        } catch {}
+      }
       setPreviewAudioUrl(url);
       setIsPreviewModalOpen(true);
     } catch (err: any) {

@@ -82,6 +82,7 @@ export const AudioPreviewModal: React.FC<AudioPreviewModalProps> = ({
               ref={audioRef}
               controls
               autoPlay
+              playsInline
               src={audioUrl}
               className="w-full h-10 accent-blue-500 focus:outline-none rounded"
             />

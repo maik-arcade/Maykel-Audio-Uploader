@@ -113,6 +113,13 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const processedBlobRef = useRef<string | null>(null);
   const originalBlobRef = useRef<string | null>(null);
+  const customTitleRef = useRef<string>(customTitle);
+  const onCustomTitleChangeRef = useRef(onCustomTitleChange);
+
+  useEffect(() => {
+    customTitleRef.current = customTitle;
+    onCustomTitleChangeRef.current = onCustomTitleChange;
+  }, [customTitle, onCustomTitleChange]);
 
   const revokeUrlSafely = (url: string | null) => {
     if (url && url.startsWith('blob:')) {
@@ -158,14 +165,15 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
         setLastFetchedUrl(trimmed);
 
         // Auto-fill custom title if empty
-        if (!customTitle && info.title) {
-          onCustomTitleChange(info.title);
+        if (!customTitleRef.current && info.title) {
+          onCustomTitleChangeRef.current(info.title);
         }
 
         // Reset previous preview blobs when link changes
         if (audioElementRef.current) {
           audioElementRef.current.pause();
           audioElementRef.current.removeAttribute('src');
+          audioElementRef.current.load();
         }
         revokeUrlSafely(originalBlobRef.current);
         originalBlobRef.current = null;
@@ -174,6 +182,8 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
         setOriginalAudioUrl(null);
         setProcessedAudioUrl(null);
         setIsPlaying(false);
+        setCurrentTime(0);
+        setDuration(0);
       } catch (err: any) {
         console.warn('Audio info fetch failed:', err);
       } finally {
@@ -182,7 +192,7 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
     }, 450);
 
     return () => clearTimeout(timer);
-  }, [youtubeUrl, isYtValid, lastFetchedUrl, customTitle, onCustomTitleChange, selectedFile]);
+  }, [youtubeUrl, isYtValid, lastFetchedUrl, selectedFile]);
 
   // 2. Handle Local File selection and detection
   useEffect(() => {
@@ -199,6 +209,7 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
       if (audioElementRef.current) {
         audioElementRef.current.pause();
         audioElementRef.current.removeAttribute('src');
+        audioElementRef.current.load();
       }
       revokeUrlSafely(originalBlobRef.current);
       revokeUrlSafely(processedBlobRef.current);
@@ -213,8 +224,8 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
       setCurrentTime(0);
       setDuration(0);
 
-      if (!customTitle) {
-        onCustomTitleChange(cleanName);
+      if (!customTitleRef.current) {
+        onCustomTitleChangeRef.current(cleanName);
       }
 
       return () => {
@@ -227,6 +238,7 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
       if (audioElementRef.current) {
         audioElementRef.current.pause();
         audioElementRef.current.removeAttribute('src');
+        audioElementRef.current.load();
       }
       revokeUrlSafely(originalBlobRef.current);
       originalBlobRef.current = null;
@@ -363,6 +375,26 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
     }
   };
 
+  // Helper to safely trigger HTMLAudioElement playback (handles mobile iOS user-gesture expiry)
+  const playAudioSafely = async (audio: HTMLAudioElement, sourceUrl: string) => {
+    try {
+      if (audio.src !== sourceUrl) {
+        audio.src = sourceUrl;
+        audio.load();
+      }
+      await audio.play();
+      setIsPlaying(true);
+    } catch (e: any) {
+      setIsPlaying(false);
+      if (e?.name === 'NotAllowedError') {
+        onShowToast('Audio listo. Pulsa Reproducir (▶) una vez más para escucharlo.', 'info');
+      } else if (e?.name !== 'AbortError') {
+        console.warn('Play error:', e);
+        onShowToast('No se pudo iniciar la reproducción. Pulsa ▶ de nuevo.', 'error');
+      }
+    }
+  };
+
   // Toggle Play / Pause handler
   const handleTogglePlay = async () => {
     const audio = audioElementRef.current;
@@ -381,14 +413,10 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
     if (!currentSource || isStaleEffects) {
       const newUrl = await ensureAudioLoaded(activePlaybackMode);
       if (newUrl) {
-        audio.src = newUrl;
-        audio.play().then(() => setIsPlaying(true)).catch((e) => console.warn('Play error:', e));
+        await playAudioSafely(audio, newUrl);
       }
     } else {
-      if (audio.src !== currentSource) {
-        audio.src = currentSource;
-      }
-      audio.play().then(() => setIsPlaying(true)).catch((e) => console.warn('Play error:', e));
+      await playAudioSafely(audio, currentSource);
     }
   };
 
@@ -401,18 +429,26 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
       audio.pause();
     }
     setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
     setActivePlaybackMode(mode);
 
-    // If already pre-loaded, attach source
-    if (mode === 'original' && originalAudioUrl && audio) {
-      audio.src = originalAudioUrl;
-    } else if (
-      mode === 'effects' &&
-      processedAudioUrl &&
-      processedSettingsKey === currentSettingsKey &&
-      audio
-    ) {
-      audio.src = processedAudioUrl;
+    // If already pre-loaded, attach source; otherwise clear old source cleanly
+    if (audio) {
+      if (mode === 'original' && originalAudioUrl) {
+        audio.src = originalAudioUrl;
+        audio.load();
+      } else if (
+        mode === 'effects' &&
+        processedAudioUrl &&
+        processedSettingsKey === currentSettingsKey
+      ) {
+        audio.src = processedAudioUrl;
+        audio.load();
+      } else {
+        audio.removeAttribute('src');
+        audio.load();
+      }
     }
   };
 
@@ -422,16 +458,18 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
     if (audio) {
       audio.pause();
       audio.removeAttribute('src');
+      audio.load();
     }
     setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
     revokeUrlSafely(processedBlobRef.current);
     processedBlobRef.current = null;
     setProcessedAudioUrl(null);
     const url = await ensureAudioLoaded('effects');
     if (url && audio) {
-      audio.src = url;
-      audio.play().then(() => setIsPlaying(true)).catch(() => {});
       onShowToast(`Audio procesado a ${settings.speed}x y ${settings.amplification > 0 ? '+' : ''}${settings.amplification}dB`, 'success');
+      await playAudioSafely(audio, url);
     }
   };
 
@@ -496,6 +534,11 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
       return;
     }
 
+    if (file.size > 30 * 1024 * 1024) {
+      onShowToast('El archivo supera el límite de 30 MB. Usa un archivo más pequeño o un enlace.', 'error');
+      return;
+    }
+
     onFileSelect(file);
     if (youtubeUrl) {
       onYoutubeUrlChange('');
@@ -515,7 +558,7 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
   return (
     <div className="bg-[#121A2A] border border-slate-800/90 rounded-2xl p-5 sm:p-6 shadow-xl shadow-black/30 transition-all hover:border-slate-700/80 space-y-5">
       {/* Hidden Audio Player instance */}
-      <audio ref={audioElementRef} preload="metadata" />
+      <audio ref={audioElementRef} preload="metadata" playsInline />
 
       {/* Section Header */}
       <div className="flex items-center justify-between">
@@ -589,6 +632,7 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
                 if (audioElementRef.current) {
                   audioElementRef.current.pause();
                   audioElementRef.current.removeAttribute('src');
+                  audioElementRef.current.load();
                 }
                 revokeUrlSafely(originalBlobRef.current);
                 originalBlobRef.current = null;
@@ -597,6 +641,8 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
                 setOriginalAudioUrl(null);
                 setProcessedAudioUrl(null);
                 setIsPlaying(false);
+                setCurrentTime(0);
+                setDuration(0);
               }}
               className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-200"
               title="Limpiar enlace"
@@ -662,7 +708,7 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
                 Arrastra tu audio aquí o <span className="text-blue-400 hover:underline">haz clic para examinar</span>
               </p>
               <p className="text-xs text-slate-500">
-                Formatos: <span className="text-slate-400 font-medium">MP3, WAV, OGG, FLAC</span> (Máx 60 MB)
+                Formatos: <span className="text-slate-400 font-medium">MP3, WAV, OGG, FLAC</span> (Máx 30 MB)
               </p>
             </div>
           </div>

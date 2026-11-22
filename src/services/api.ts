@@ -1177,6 +1177,18 @@ export function subscribeToJobEvents(
   return cleanup;
 }
 
+const MAX_SAFE_UPLOAD_BYTES = 30 * 1024 * 1024; // 30 MB (below Nginx 32M limit)
+
+async function isStaticFrontendOnly(): Promise<boolean> {
+  try {
+    const res = await fetchWithTimeout('/api/system-status', { method: 'GET' }, 3000);
+    const contentType = res.headers.get('content-type') || '';
+    return res.status === 404 || !contentType.includes('application/json');
+  } catch {
+    return false;
+  }
+}
+
 export async function requestAudioPreview(formData: FormData): Promise<string> {
   const mode = (formData.get('mode') as string) || 'processed';
   const audioFile = formData.get('audioFile') as File | null;
@@ -1189,51 +1201,12 @@ export async function requestAudioPreview(formData: FormData): Promise<string> {
     return URL.createObjectURL(audioFile);
   }
 
-  // If processed mode and local file is provided, try server first then browser fallback only if endpoint unavailable
-  if (audioFile && mode === 'processed') {
-    let shouldFallbackToBrowser = false;
-    try {
-      const res = await fetch('/api/preview-audio', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: formData,
-      });
-
-      if (res.ok) {
-        const blob = await res.blob();
-        return URL.createObjectURL(blob);
-      }
-
-      const contentType = res.headers.get('content-type') || '';
-      if (res.status === 404 || !contentType.includes('application/json')) {
-        shouldFallbackToBrowser = true;
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || errData.message || `Error en el servidor (${res.status}) al procesar el audio.`);
-      }
-    } catch (err: any) {
-      if (err?.name === 'TypeError' || shouldFallbackToBrowser) {
-        shouldFallbackToBrowser = true;
-      } else {
-        throw err;
-      }
-    }
-
-    if (shouldFallbackToBrowser) {
-      try {
-        return await processAudioInBrowser(audioFile, {
-          speed,
-          amplification,
-          maxDuration,
-        });
-      } catch (browserErr: any) {
-        console.warn('Browser audio processing fallback error:', browserErr);
-        throw new Error(browserErr.message || 'No se pudo procesar el audio con efectos en el navegador.');
-      }
-    }
+  if (audioFile && audioFile.size > MAX_SAFE_UPLOAD_BYTES) {
+    throw new Error('El archivo supera el límite de 30 MB. Usa un archivo más ligero o un enlace de YouTube/SoundCloud.');
   }
 
-  // Remote URL (YouTube / SoundCloud / Direct Link)
+  // Try backend server first (FFmpeg runs on server with minimal browser RAM)
+  let shouldFallbackToBrowser = false;
   try {
     const res = await fetch('/api/preview-audio', {
       method: 'POST',
@@ -1242,21 +1215,59 @@ export async function requestAudioPreview(formData: FormData): Promise<string> {
     });
 
     if (res.ok) {
-      const blob = await res.blob();
-      return URL.createObjectURL(blob);
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('audio/') || contentType.includes('application/octet-stream')) {
+        const blob = await res.blob();
+        return URL.createObjectURL(blob);
+      }
+      throw new Error('El servidor devolvió una respuesta inesperada al generar la vista previa.');
+    }
+
+    if (res.status === 413) {
+      throw new Error('El archivo supera el límite máximo permitido (30 MB). Usa un archivo más pequeño o un enlace.');
+    }
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      throw new Error('El servidor tardó demasiado en procesar este audio. Intenta de nuevo en unos segundos.');
     }
 
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const errData = await res.json().catch(() => ({}));
-      if (errData.message || errData.error) {
-        throw new Error(errData.message || errData.error);
-      }
+      throw new Error(errData.message || errData.error || `Error en el servidor (${res.status}) al procesar el audio.`);
     }
-    throw new Error(`Error en el servidor (${res.status}) al procesar el audio.`);
+
+    // Only check for static hosting fallback on 404 HTML responses
+    if (res.status === 404 && audioFile) {
+      shouldFallbackToBrowser = await isStaticFrontendOnly();
+    }
+    if (!shouldFallbackToBrowser) {
+      throw new Error(`Error en el servidor (${res.status}) al generar la vista previa.`);
+    }
   } catch (err: any) {
-    throw new Error(err.message || 'No se pudo generar la vista previa del audio.');
+    if (audioFile && (err?.name === 'TypeError') && await isStaticFrontendOnly()) {
+      shouldFallbackToBrowser = true;
+    } else if (!shouldFallbackToBrowser) {
+      throw new Error(err?.message || 'No se pudo generar la vista previa del audio.');
+    }
   }
+
+  if (audioFile && shouldFallbackToBrowser) {
+    if (audioFile.size > 25 * 1024 * 1024) {
+      throw new Error('El archivo es demasiado grande para procesarse en el navegador del dispositivo.');
+    }
+    try {
+      return await processAudioInBrowser(audioFile, {
+        speed,
+        amplification,
+        maxDuration,
+      });
+    } catch (browserErr: any) {
+      console.warn('Browser audio processing fallback error:', browserErr);
+      throw new Error(browserErr.message || 'No se pudo procesar el audio con efectos en el navegador.');
+    }
+  }
+
+  throw new Error('No se pudo generar la vista previa del audio.');
 }
 
 // Helper to force browser to save a file/blob safely without EVER navigating or reloading the page
@@ -1286,7 +1297,15 @@ export function triggerBrowserSave(urlOrBlob: string | Blob, fileName: string) {
     }
 
     // For HTTP server URLs, use a hidden iframe so the browser triggers download without navigating or reloading the main SPA
+    const existing = document.getElementById('maykel-hidden-download-frame') as HTMLIFrameElement | null;
+    if (existing && existing.parentNode) {
+      try {
+        existing.parentNode.removeChild(existing);
+      } catch {}
+    }
+
     const iframe = document.createElement('iframe');
+    iframe.id = 'maykel-hidden-download-frame';
     iframe.style.display = 'none';
     iframe.style.width = '0';
     iframe.style.height = '0';
@@ -1321,7 +1340,11 @@ export async function downloadRobloxReadyAudio(params: {
 }> {
   const { audioFile, youtubeUrl, speed, amplification, maxDuration, customTitle } = params;
 
-  // 1. Try server backend first (single-request stream prevents multi-instance 404s and prevents page navigation/reload)
+  if (audioFile && audioFile.size > MAX_SAFE_UPLOAD_BYTES) {
+    throw new Error('El archivo supera el límite de 30 MB. Usa un archivo más ligero o pega un enlace.');
+  }
+
+  // 1. Process on backend and retrieve JSON downloadUrl (zero JS Blob RAM pressure, iframe download never navigates/reloads)
   let shouldFallbackToClient = false;
   try {
     const formData = new FormData();
@@ -1336,7 +1359,7 @@ export async function downloadRobloxReadyAudio(params: {
     formData.append('speed', speed.toString());
     formData.append('amplification', amplification.toString());
     formData.append('maxDuration', maxDuration.toString());
-    formData.append('format', 'stream');
+    formData.append('format', 'json');
     if (customTitle && customTitle.trim()) {
       formData.append('customTitle', customTitle.trim());
     }
@@ -1356,64 +1379,53 @@ export async function downloadRobloxReadyAudio(params: {
         const downloadUrl = data.downloadUrl;
         const sizeBytes = data.sizeBytes;
 
-        triggerBrowserSave(downloadUrl, fileName);
-        return { fileName, sizeBytes, downloadUrl };
-      } else if (contentType.includes('audio/') || contentType.includes('application/octet-stream')) {
-        // Direct MP3 stream received in one roundtrip
-        const blob = await res.blob();
-        const disposition = res.headers.get('content-disposition') || '';
-        const xFileName = res.headers.get('x-file-name') || '';
-        const xDownloadUrl = res.headers.get('x-download-url') || undefined;
-
-        let fileName = 'audio_roblox_ready.mp3';
-        if (xFileName) {
-          try {
-            fileName = decodeURIComponent(xFileName);
-          } catch {
-            fileName = xFileName;
-          }
-        } else {
-          const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
-          if (match && match[1]) {
-            try {
-              fileName = decodeURIComponent(match[1]);
-            } catch {
-              fileName = match[1];
-            }
-          } else if (customTitle && customTitle.trim()) {
-            fileName = `${customTitle.trim().replace(/[^a-zA-Z0-9_-]/g, '_')}.mp3`;
-          } else if (audioFile) {
-            fileName = `${audioFile.name.replace(/\.[^/.]+$/, '')}_roblox_ready.mp3`;
-          }
+        if (!downloadUrl) {
+          throw new Error('El servidor no devolvió el enlace de descarga del MP3.');
         }
 
-        const blobUrl = URL.createObjectURL(blob);
-        triggerBrowserSave(blobUrl, fileName);
-
-        return { fileName, sizeBytes: blob.size, blobUrl, downloadUrl: xDownloadUrl, blob };
+        triggerBrowserSave(downloadUrl, fileName);
+        return { fileName, sizeBytes, downloadUrl };
       } else {
-        // HTML returned (static Netlify hosting)
-        shouldFallbackToClient = true;
+        // Unexpected non-JSON 200 (e.g., static SPA index.html)
+        if (audioFile && await isStaticFrontendOnly()) {
+          shouldFallbackToClient = true;
+        } else {
+          throw new Error('Respuesta inesperada del servidor al preparar la descarga.');
+        }
       }
-    } else if (res.status === 404 || !contentType.includes('application/json')) {
-      shouldFallbackToClient = true;
     } else {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.error || errData.message || `Error del servidor (${res.status}) al procesar el audio.`);
+      if (res.status === 413) {
+        throw new Error('El archivo supera el límite de 30 MB permitido por el servidor.');
+      }
+      if (res.status === 502 || res.status === 503 || res.status === 504) {
+        throw new Error('El servidor tardó demasiado en procesar este audio. Por favor intenta de nuevo.');
+      }
+      if (contentType.includes('application/json')) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || errData.message || `Error del servidor (${res.status}) al procesar el audio.`);
+      }
+      if (res.status === 404 && audioFile && await isStaticFrontendOnly()) {
+        shouldFallbackToClient = true;
+      } else {
+        throw new Error(`Error del servidor (${res.status}) al procesar la descarga.`);
+      }
     }
   } catch (backendErr: any) {
     if (!audioFile && youtubeUrl) {
       throw backendErr;
     }
-    if (backendErr?.name === 'TypeError' || shouldFallbackToClient) {
+    if (audioFile && backendErr?.name === 'TypeError' && await isStaticFrontendOnly()) {
       shouldFallbackToClient = true;
     } else if (!shouldFallbackToClient) {
       throw backendErr;
     }
   }
 
-  // 2. Client-side fallback only if backend endpoint is unavailable (e.g. static Netlify hosting)
+  // 2. Client-side fallback ONLY if static frontend hosting (no backend) and file is small enough for mobile RAM
   if (audioFile && shouldFallbackToClient) {
+    if (audioFile.size > 25 * 1024 * 1024) {
+      throw new Error('El archivo es demasiado grande para procesarse sin servidor.');
+    }
     try {
       const mp3Blob = await processAudioToMp3Blob(audioFile, {
         speed,

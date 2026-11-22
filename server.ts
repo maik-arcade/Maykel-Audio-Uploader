@@ -21,6 +21,23 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+// Disable ytdl-core auto-update checks and debug watch.html dumps
+process.env.YTDL_NO_UPDATE = '1';
+
+function cleanupStrayWatchFiles() {
+  try {
+    const files = fs.readdirSync(process.cwd());
+    for (const f of files) {
+      if (f.endsWith('-watch.html')) {
+        try {
+          fs.unlinkSync(path.join(process.cwd(), f));
+        } catch {}
+      }
+    }
+  } catch {}
+}
+cleanupStrayWatchFiles();
+
 // Prevent transient stream or network errors from crashing the server and forcing frontend reloads
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception (server kept alive):', err);
@@ -528,6 +545,7 @@ async function downloadYouTubeAudio(url: string, outputPath: string): Promise<st
 
       return title;
     } catch (distubeErr: any) {
+      cleanupStrayWatchFiles();
       const rawMsg = distubeErr.message || '';
       if (rawMsg.includes('Sign in to confirm you’re not a bot') || rawMsg.includes('bot')) {
         throw new Error(
@@ -541,6 +559,8 @@ async function downloadYouTubeAudio(url: string, outputPath: string): Promise<st
         `No se pudo procesar el enlace: ${rawMsg}\n\n` +
         '💡 Tip: Descarga el archivo de audio a tu PC/móvil y súbelo en "Subir Archivo Local".'
       );
+    } finally {
+      cleanupStrayWatchFiles();
     }
   }
 
@@ -1682,7 +1702,9 @@ app.post('/api/preview-audio', upload.single('audioFile'), async (req, res) => {
       throw new Error('El archivo de preescucha no se generó correctamente.');
     }
 
+    const stat = fs.statSync(outputPreviewPath);
     res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', stat.size);
     res.setHeader('Content-Disposition', 'inline; filename="preview.mp3"');
     res.setHeader('Cache-Control', 'no-cache');
     const readStream = fs.createReadStream(outputPreviewPath);
@@ -2451,11 +2473,31 @@ app.post('/api/upload', upload.single('audioFile'), async (req, res) => {
   }
 });
 
+// Ensure multer and API errors always return JSON instead of HTML
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (!err) return next();
+  console.error('Express error middleware:', err);
+  if (res.headersSent) return next(err);
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({
+      error: 'El archivo es demasiado grande. El límite máximo permitido es de 30 MB.',
+    });
+  }
+  return res.status(err.status || 500).json({
+    error: err.message || 'Error interno en el servidor al procesar la solicitud.',
+  });
+});
+
 // Vite & Static Asset Handling
 async function start() {
   if (process.env.NODE_ENV !== 'production') {
+    process.env.DISABLE_HMR = 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        watch: null,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

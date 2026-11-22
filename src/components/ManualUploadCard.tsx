@@ -64,12 +64,12 @@ export const ManualUploadCard: React.FC<ManualUploadCardProps> = ({
   };
 
   const handleManualSave = () => {
-    if (blobUrl) {
+    if (downloadUrl) {
+      triggerBrowserSave(downloadUrl, fileName);
+    } else if (blobUrl) {
       triggerBrowserSave(blobUrl, fileName);
     } else if (blob) {
       triggerBrowserSave(blob, fileName);
-    } else if (downloadUrl) {
-      triggerBrowserSave(downloadUrl, fileName);
     } else {
       onReDownload();
     }
@@ -198,7 +198,7 @@ export const ManualUploadCard: React.FC<ManualUploadCardProps> = ({
                 title="Abrir menú de compartir / Guardar en Archivos de iOS o Android"
               >
                 <Share2 className="w-4 h-4 text-emerald-400" />
-                <span className="hidden sm:inline">Compartir</span>
+                <span>Guardar / Compartir</span>
               </button>
             )}
           </div>
