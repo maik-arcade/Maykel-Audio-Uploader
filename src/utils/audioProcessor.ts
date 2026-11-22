@@ -127,10 +127,12 @@ export async function renderProcessedAudioBuffer(
   const { speed = 2.33, amplification = -4, maxDuration = 400 } = options;
 
   let arrayBuffer: ArrayBuffer;
+  let shouldSlice = false;
   if (audioSource instanceof File || audioSource instanceof Blob) {
     arrayBuffer = await audioSource.arrayBuffer();
   } else {
     arrayBuffer = audioSource;
+    shouldSlice = true;
   }
 
   const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
@@ -141,7 +143,7 @@ export async function renderProcessedAudioBuffer(
   const tempCtx = new AudioCtx();
   let decodedBuffer: AudioBuffer;
   try {
-    decodedBuffer = await tempCtx.decodeAudioData(arrayBuffer.slice(0));
+    decodedBuffer = await tempCtx.decodeAudioData(shouldSlice ? arrayBuffer.slice(0) : arrayBuffer);
   } finally {
     try {
       tempCtx.close();

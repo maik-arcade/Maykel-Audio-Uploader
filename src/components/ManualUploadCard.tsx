@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Download,
   ExternalLink,
@@ -48,13 +48,13 @@ export const ManualUploadCard: React.FC<ManualUploadCardProps> = ({
   const [copiedTitle, setCopiedTitle] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
 
-  const suggestedName =
-    customTitle && customTitle.trim()
+  const suggestedName = useMemo(() => {
+    return customTitle && customTitle.trim()
       ? customTitle.trim().substring(0, 30)
       : `audio_${Math.random().toString(36).substring(2, 8)}`;
+  }, [customTitle]);
 
   const robloxCreatorAudioUrl = 'https://create.roblox.com/dashboard/creations?activeTab=Audio';
-  const effectiveUrl = downloadUrl || blobUrl || '#';
 
   const handleCopyTitle = () => {
     navigator.clipboard.writeText(suggestedName);
@@ -64,10 +64,12 @@ export const ManualUploadCard: React.FC<ManualUploadCardProps> = ({
   };
 
   const handleManualSave = () => {
-    if (downloadUrl) {
-      triggerBrowserSave(downloadUrl, fileName);
-    } else if (blobUrl) {
+    if (blobUrl) {
       triggerBrowserSave(blobUrl, fileName);
+    } else if (blob) {
+      triggerBrowserSave(blob, fileName);
+    } else if (downloadUrl) {
+      triggerBrowserSave(downloadUrl, fileName);
     } else {
       onReDownload();
     }
@@ -176,18 +178,15 @@ export const ManualUploadCard: React.FC<ManualUploadCardProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            <a
+            <button
+              type="button"
               id="direct-download-anchor-btn"
-              href={effectiveUrl}
-              download={fileName}
-              target="_blank"
-              rel="noopener noreferrer"
               onClick={handleManualSave}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-bold text-xs sm:text-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-lg shadow-emerald-600/30 active:scale-95 transition-all text-center"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-bold text-xs sm:text-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-lg shadow-emerald-600/30 active:scale-95 transition-all text-center cursor-pointer"
             >
               <Download className="w-4 h-4" />
               <span>Guardar en Archivos / Descargar</span>
-            </a>
+            </button>
 
             {canNativeShare && (
               <button

@@ -111,6 +111,23 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
   const [processedSettingsKey, setProcessedSettingsKey] = useState<string>('');
 
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const processedBlobRef = useRef<string | null>(null);
+  const originalBlobRef = useRef<string | null>(null);
+
+  const revokeUrlSafely = (url: string | null) => {
+    if (url && url.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {}
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      revokeUrlSafely(processedBlobRef.current);
+      revokeUrlSafely(originalBlobRef.current);
+    };
+  }, []);
 
   const isYtValid = youtubeUrl.trim().length > 0 && isValidAudioUrl(youtubeUrl);
   const isYtInvalid = youtubeUrl.trim().length > 0 && !isValidAudioUrl(youtubeUrl);
@@ -122,6 +139,9 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
   useEffect(() => {
     const trimmed = youtubeUrl.trim();
     if (!trimmed || !isYtValid) {
+      if (!trimmed) {
+        setLastFetchedUrl('');
+      }
       if (!selectedFile) {
         setDetectedInfo(null);
       }
@@ -143,6 +163,14 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
         }
 
         // Reset previous preview blobs when link changes
+        if (audioElementRef.current) {
+          audioElementRef.current.pause();
+          audioElementRef.current.removeAttribute('src');
+        }
+        revokeUrlSafely(originalBlobRef.current);
+        originalBlobRef.current = null;
+        revokeUrlSafely(processedBlobRef.current);
+        processedBlobRef.current = null;
         setOriginalAudioUrl(null);
         setProcessedAudioUrl(null);
         setIsPlaying(false);
@@ -168,23 +196,48 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
       };
       setDetectedInfo(localInfo);
 
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
+        audioElementRef.current.removeAttribute('src');
+      }
+      revokeUrlSafely(originalBlobRef.current);
+      revokeUrlSafely(processedBlobRef.current);
+      processedBlobRef.current = null;
+
       // Create object URL for local original playback
       const localBlobUrl = URL.createObjectURL(selectedFile);
+      originalBlobRef.current = localBlobUrl;
       setOriginalAudioUrl(localBlobUrl);
       setProcessedAudioUrl(null);
       setIsPlaying(false);
+      setCurrentTime(0);
+      setDuration(0);
 
       if (!customTitle) {
         onCustomTitleChange(cleanName);
       }
 
       return () => {
-        URL.revokeObjectURL(localBlobUrl);
+        if (originalBlobRef.current === localBlobUrl) {
+          originalBlobRef.current = null;
+        }
+        revokeUrlSafely(localBlobUrl);
       };
     } else if (!youtubeUrl) {
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
+        audioElementRef.current.removeAttribute('src');
+      }
+      revokeUrlSafely(originalBlobRef.current);
+      originalBlobRef.current = null;
+      revokeUrlSafely(processedBlobRef.current);
+      processedBlobRef.current = null;
       setDetectedInfo(null);
       setOriginalAudioUrl(null);
       setProcessedAudioUrl(null);
+      setIsPlaying(false);
+      setCurrentTime(0);
+      setDuration(0);
     }
   }, [selectedFile]);
 
@@ -210,12 +263,17 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
     const handleCanPlay = () => {
       setIsAudioLoading(false);
     };
+    const handleError = () => {
+      setIsAudioLoading(false);
+      setIsPlaying(false);
+    };
 
     audio.addEventListener('timeupdate', handleTimeUpdate);
     audio.addEventListener('loadedmetadata', handleLoadedMetadata);
     audio.addEventListener('ended', handleEnded);
     audio.addEventListener('waiting', handleWaiting);
     audio.addEventListener('canplay', handleCanPlay);
+    audio.addEventListener('error', handleError);
 
     return () => {
       audio.removeEventListener('timeupdate', handleTimeUpdate);
@@ -223,8 +281,9 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
       audio.removeEventListener('ended', handleEnded);
       audio.removeEventListener('waiting', handleWaiting);
       audio.removeEventListener('canplay', handleCanPlay);
+      audio.removeEventListener('error', handleError);
     };
-  }, [originalAudioUrl, processedAudioUrl, activePlaybackMode]);
+  }, []);
 
   // Helper to load audio preview stream (Original vs Processed with Effects)
   const ensureAudioLoaded = async (mode: 'original' | 'effects'): Promise<string | null> => {
@@ -255,6 +314,8 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
         formData.append('maxDuration', '120');
 
         const url = await requestAudioPreview(formData);
+        revokeUrlSafely(originalBlobRef.current);
+        originalBlobRef.current = url;
         setOriginalAudioUrl(url);
         return url;
       } catch (err: any) {
@@ -288,6 +349,8 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
         formData.append('maxDuration', settings.maxDuration.toString());
 
         const url = await requestAudioPreview(formData);
+        revokeUrlSafely(processedBlobRef.current);
+        processedBlobRef.current = url;
         setProcessedAudioUrl(url);
         setProcessedSettingsKey(currentSettingsKey);
         return url;
@@ -358,8 +421,11 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
     const audio = audioElementRef.current;
     if (audio) {
       audio.pause();
+      audio.removeAttribute('src');
     }
     setIsPlaying(false);
+    revokeUrlSafely(processedBlobRef.current);
+    processedBlobRef.current = null;
     setProcessedAudioUrl(null);
     const url = await ensureAudioLoaded('effects');
     if (url && audio) {
@@ -518,7 +584,16 @@ export const AudioSourceCard: React.FC<AudioSourceCardProps> = ({
               id="clear-youtube-url-btn"
               onClick={() => {
                 onYoutubeUrlChange('');
+                setLastFetchedUrl('');
                 setDetectedInfo(null);
+                if (audioElementRef.current) {
+                  audioElementRef.current.pause();
+                  audioElementRef.current.removeAttribute('src');
+                }
+                revokeUrlSafely(originalBlobRef.current);
+                originalBlobRef.current = null;
+                revokeUrlSafely(processedBlobRef.current);
+                processedBlobRef.current = null;
                 setOriginalAudioUrl(null);
                 setProcessedAudioUrl(null);
                 setIsPlaying(false);

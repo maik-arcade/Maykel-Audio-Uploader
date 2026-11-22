@@ -657,22 +657,46 @@ export async function fetchSystemStatus(): Promise<SystemStatus> {
 }
 
 export async function fetchHistory(): Promise<UploadHistoryItem[]> {
+  let serverHistory: UploadHistoryItem[] = [];
   try {
     const res = await fetch('/api/history', {
       headers: getAuthHeaders(),
     });
     const contentType = res.headers.get('content-type') || '';
     if (res.ok && contentType.includes('application/json')) {
-      return await res.json();
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        serverHistory = data;
+      }
     }
   } catch {}
 
+  let localHistory: UploadHistoryItem[] = [];
   try {
     const local = localStorage.getItem(LOCAL_HISTORY_KEY);
-    return local ? JSON.parse(local) : [];
-  } catch {
-    return [];
+    if (local) {
+      const parsed = JSON.parse(local);
+      if (Array.isArray(parsed)) {
+        localHistory = parsed;
+      }
+    }
+  } catch {}
+
+  if (serverHistory.length === 0) return localHistory;
+  if (localHistory.length === 0) return serverHistory;
+
+  const mergedMap = new Map<string, UploadHistoryItem>();
+  for (const item of serverHistory) {
+    mergedMap.set(item.id, item);
   }
+  for (const item of localHistory) {
+    if (!mergedMap.has(item.id)) {
+      mergedMap.set(item.id, item);
+    }
+  }
+  return Array.from(mergedMap.values())
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+    .slice(0, 50);
 }
 
 export async function clearHistory(): Promise<void> {
@@ -1165,8 +1189,9 @@ export async function requestAudioPreview(formData: FormData): Promise<string> {
     return URL.createObjectURL(audioFile);
   }
 
-  // If processed mode and local file is provided, try server first then instant browser fallback
+  // If processed mode and local file is provided, try server first then browser fallback only if endpoint unavailable
   if (audioFile && mode === 'processed') {
+    let shouldFallbackToBrowser = false;
     try {
       const res = await fetch('/api/preview-audio', {
         method: 'POST',
@@ -1178,20 +1203,33 @@ export async function requestAudioPreview(formData: FormData): Promise<string> {
         const blob = await res.blob();
         return URL.createObjectURL(blob);
       }
-    } catch {
-      // Fallback below to browser processing
+
+      const contentType = res.headers.get('content-type') || '';
+      if (res.status === 404 || !contentType.includes('application/json')) {
+        shouldFallbackToBrowser = true;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || errData.message || `Error en el servidor (${res.status}) al procesar el audio.`);
+      }
+    } catch (err: any) {
+      if (err?.name === 'TypeError' || shouldFallbackToBrowser) {
+        shouldFallbackToBrowser = true;
+      } else {
+        throw err;
+      }
     }
 
-    // Client-side Web Audio API synthesizer for instant 100% reliable preview
-    try {
-      return await processAudioInBrowser(audioFile, {
-        speed,
-        amplification,
-        maxDuration,
-      });
-    } catch (browserErr: any) {
-      console.warn('Browser audio processing fallback error:', browserErr);
-      throw new Error(browserErr.message || 'No se pudo procesar el audio con efectos en el navegador.');
+    if (shouldFallbackToBrowser) {
+      try {
+        return await processAudioInBrowser(audioFile, {
+          speed,
+          amplification,
+          maxDuration,
+        });
+      } catch (browserErr: any) {
+        console.warn('Browser audio processing fallback error:', browserErr);
+        throw new Error(browserErr.message || 'No se pudo procesar el audio con efectos en el navegador.');
+      }
     }
   }
 
@@ -1221,28 +1259,46 @@ export async function requestAudioPreview(formData: FormData): Promise<string> {
   }
 }
 
-// Helper to force browser to save a file/blob safely on both mobile and desktop
+// Helper to force browser to save a file/blob safely without EVER navigating or reloading the page
 export function triggerBrowserSave(urlOrBlob: string | Blob, fileName: string) {
   try {
-    const isBlob = typeof urlOrBlob !== 'string';
-    const url = isBlob ? URL.createObjectURL(urlOrBlob) : urlOrBlob;
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    // CRITICAL: Do NOT set target="_blank".
-    // On iOS Safari and mobile Chrome, target="_blank" opens a new tab and suspends or crashes the current page.
-    a.rel = 'noopener noreferrer';
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
+    const isBlobObject = typeof urlOrBlob !== 'string';
+    const isBlobUrl = typeof urlOrBlob === 'string' && urlOrBlob.startsWith('blob:');
+
+    if (isBlobObject || isBlobUrl) {
+      const url = isBlobObject ? URL.createObjectURL(urlOrBlob) : urlOrBlob;
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      a.rel = 'noopener noreferrer';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        try {
+          if (a.parentNode) document.body.removeChild(a);
+          if (isBlobObject) {
+            URL.revokeObjectURL(url);
+          }
+        } catch {}
+      }, 2000);
+      return;
+    }
+
+    // For HTTP server URLs, use a hidden iframe so the browser triggers download without navigating or reloading the main SPA
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.src = urlOrBlob;
+    document.body.appendChild(iframe);
     setTimeout(() => {
       try {
-        document.body.removeChild(a);
-        if (isBlob) {
-          URL.revokeObjectURL(url);
-        }
+        if (iframe.parentNode) document.body.removeChild(iframe);
       } catch {}
-    }, 1500);
+    }, 60000);
   } catch (e) {
     console.warn('Direct click download failed:', e);
   }
@@ -1265,7 +1321,8 @@ export async function downloadRobloxReadyAudio(params: {
 }> {
   const { audioFile, youtubeUrl, speed, amplification, maxDuration, customTitle } = params;
 
-  // 1. Try server backend first (supports YouTube and server FFmpeg)
+  // 1. Try server backend first (single-request stream prevents multi-instance 404s and prevents page navigation/reload)
+  let shouldFallbackToClient = false;
   try {
     const formData = new FormData();
     if (audioFile) {
@@ -1279,6 +1336,7 @@ export async function downloadRobloxReadyAudio(params: {
     formData.append('speed', speed.toString());
     formData.append('amplification', amplification.toString());
     formData.append('maxDuration', maxDuration.toString());
+    formData.append('format', 'stream');
     if (customTitle && customTitle.trim()) {
       formData.append('customTitle', customTitle.trim());
     }
@@ -1298,52 +1356,64 @@ export async function downloadRobloxReadyAudio(params: {
         const downloadUrl = data.downloadUrl;
         const sizeBytes = data.sizeBytes;
 
-        // Trigger native download immediately
-        // Avoid pre-fetching multi-megabyte blobs into JS memory here to protect mobile RAM
         triggerBrowserSave(downloadUrl, fileName);
-
         return { fileName, sizeBytes, downloadUrl };
-      } else {
-        // Direct stream received
+      } else if (contentType.includes('audio/') || contentType.includes('application/octet-stream')) {
+        // Direct MP3 stream received in one roundtrip
         const blob = await res.blob();
         const disposition = res.headers.get('content-disposition') || '';
+        const xFileName = res.headers.get('x-file-name') || '';
+        const xDownloadUrl = res.headers.get('x-download-url') || undefined;
+
         let fileName = 'audio_roblox_ready.mp3';
-        const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
-        if (match && match[1]) {
+        if (xFileName) {
           try {
-            fileName = decodeURIComponent(match[1]);
+            fileName = decodeURIComponent(xFileName);
           } catch {
-            fileName = match[1];
+            fileName = xFileName;
           }
-        } else if (customTitle && customTitle.trim()) {
-          fileName = `${customTitle.trim().replace(/[^a-zA-Z0-9_-]/g, '_')}.mp3`;
-        } else if (audioFile) {
-          fileName = `${audioFile.name.replace(/\.[^/.]+$/, '')}_roblox_ready.mp3`;
+        } else {
+          const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+          if (match && match[1]) {
+            try {
+              fileName = decodeURIComponent(match[1]);
+            } catch {
+              fileName = match[1];
+            }
+          } else if (customTitle && customTitle.trim()) {
+            fileName = `${customTitle.trim().replace(/[^a-zA-Z0-9_-]/g, '_')}.mp3`;
+          } else if (audioFile) {
+            fileName = `${audioFile.name.replace(/\.[^/.]+$/, '')}_roblox_ready.mp3`;
+          }
         }
 
         const blobUrl = URL.createObjectURL(blob);
         triggerBrowserSave(blobUrl, fileName);
 
-        return { fileName, sizeBytes: blob.size, blobUrl, blob };
+        return { fileName, sizeBytes: blob.size, blobUrl, downloadUrl: xDownloadUrl, blob };
+      } else {
+        // HTML returned (static Netlify hosting)
+        shouldFallbackToClient = true;
       }
-    }
-
-    if (contentType.includes('application/json')) {
+    } else if (res.status === 404 || !contentType.includes('application/json')) {
+      shouldFallbackToClient = true;
+    } else {
       const errData = await res.json().catch(() => ({}));
-      if (errData.error || errData.message) {
-        throw new Error(errData.error || errData.message);
-      }
+      throw new Error(errData.error || errData.message || `Error del servidor (${res.status}) al procesar el audio.`);
     }
-    throw new Error(`Error del servidor (${res.status}) al procesar el audio.`);
   } catch (backendErr: any) {
-    // If it's a YouTube link, bubble the backend error
     if (!audioFile && youtubeUrl) {
+      throw backendErr;
+    }
+    if (backendErr?.name === 'TypeError' || shouldFallbackToClient) {
+      shouldFallbackToClient = true;
+    } else if (!shouldFallbackToClient) {
       throw backendErr;
     }
   }
 
-  // 2. Client-side fallback if audioFile is available (100% offline & fast)
-  if (audioFile) {
+  // 2. Client-side fallback only if backend endpoint is unavailable (e.g. static Netlify hosting)
+  if (audioFile && shouldFallbackToClient) {
     try {
       const mp3Blob = await processAudioToMp3Blob(audioFile, {
         speed,

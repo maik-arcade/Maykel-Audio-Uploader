@@ -344,6 +344,12 @@ export default function App() {
         customTitle: customTitle.trim(),
       });
 
+      if (manualDownloadResult?.blobUrl) {
+        try {
+          URL.revokeObjectURL(manualDownloadResult.blobUrl);
+        } catch {}
+      }
+
       setManualDownloadResult({
         fileName: result.fileName,
         fileSizeBytes: result.sizeBytes,
@@ -565,7 +571,14 @@ export default function App() {
               downloadUrl={manualDownloadResult.downloadUrl}
               blobUrl={manualDownloadResult.blobUrl}
               blob={manualDownloadResult.blob}
-              onDismiss={() => setManualDownloadResult(null)}
+              onDismiss={() => {
+                if (manualDownloadResult?.blobUrl) {
+                  try {
+                    URL.revokeObjectURL(manualDownloadResult.blobUrl);
+                  } catch {}
+                }
+                setManualDownloadResult(null);
+              }}
               onReDownload={handleStartDownload}
               onShowToast={addToast}
             />
@@ -620,7 +633,7 @@ export default function App() {
               <AdvancedSettingsCard
                 settings={settings}
                 onSettingsChange={setSettings}
-                onOpenPreview={handleOpenPreview}
+                onPreviewAudio={handleOpenPreview}
                 hasAudioSource={!!selectedFile || (!!youtubeUrl && youtubeUrl.trim().length > 0)}
                 isPreviewLoading={isPreviewLoading}
               />

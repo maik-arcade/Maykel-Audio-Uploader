@@ -21,6 +21,14 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+// Prevent transient stream or network errors from crashing the server and forcing frontend reloads
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception (server kept alive):', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection (server kept alive):', reason);
+});
+
 const app = express();
 const PORT = 3000;
 
@@ -320,6 +328,9 @@ async function downloadYouTubeAudio(url: string, outputPath: string): Promise<st
   // Priority 1: yt-dlp (Fastest, extracts title, direct audio streams, full YouTube & SoundCloud support)
   const ytdlpPath = path.join(process.cwd(), 'bin', 'yt-dlp');
   if (fs.existsSync(ytdlpPath)) {
+    try {
+      fs.chmodSync(ytdlpPath, 0o755);
+    } catch {}
     const tempDir = path.dirname(outputPath);
     const tempBase = `ytdl_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     const tempOutputTemplate = path.join(tempDir, `${tempBase}.%(ext)s`);
@@ -384,11 +395,24 @@ async function downloadYouTubeAudio(url: string, outputPath: string): Promise<st
       });
 
       const writeStream = fs.createWriteStream(outputPath);
-      response.data.pipe(writeStream);
-
       await new Promise<void>((resolve, reject) => {
-        writeStream.on('finish', () => resolve());
-        writeStream.on('error', (err) => reject(err));
+        let settled = false;
+        const fail = (err: any) => {
+          if (settled) return;
+          settled = true;
+          try { response.data.destroy(); } catch {}
+          try { writeStream.destroy(); } catch {}
+          reject(err);
+        };
+        response.data.on('error', fail);
+        writeStream.on('error', fail);
+        writeStream.on('finish', () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        });
+        response.data.pipe(writeStream);
       });
 
       const parsedName = path.basename(new URL(trimmedUrl).pathname) || 'Direct Audio';
@@ -436,11 +460,24 @@ async function downloadYouTubeAudio(url: string, outputPath: string): Promise<st
             });
 
             const writer = fs.createWriteStream(outputPath);
-            rawStreamRes.data.pipe(writer);
-
             await new Promise<void>((resolve, reject) => {
-              writer.on('finish', () => resolve());
-              writer.on('error', (e) => reject(e));
+              let settled = false;
+              const fail = (e: any) => {
+                if (settled) return;
+                settled = true;
+                try { rawStreamRes.data.destroy(); } catch {}
+                try { writer.destroy(); } catch {}
+                reject(e);
+              };
+              rawStreamRes.data.on('error', fail);
+              writer.on('error', fail);
+              writer.on('finish', () => {
+                if (!settled) {
+                  settled = true;
+                  resolve();
+                }
+              });
+              rawStreamRes.data.pipe(writer);
             });
 
             if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1024) {
@@ -1515,6 +1552,7 @@ app.post('/api/audio-info', async (req, res) => {
     // Case 2: yt-dlp dump-json
     if (fs.existsSync(ytdlpPath)) {
       try {
+        try { fs.chmodSync(ytdlpPath, 0o755); } catch {}
         const isYouTube = /(youtube\.com|youtu\.be)/i.test(trimmedUrl);
         const args = [
           '--dump-json',
@@ -1648,21 +1686,30 @@ app.post('/api/preview-audio', upload.single('audioFile'), async (req, res) => {
     res.setHeader('Content-Disposition', 'inline; filename="preview.mp3"');
     res.setHeader('Cache-Control', 'no-cache');
     const readStream = fs.createReadStream(outputPreviewPath);
-    readStream.pipe(res);
+    let cleanedUp = false;
+    const safeCleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      try { readStream.destroy(); } catch {}
+      cleanupFiles(tempFiles);
+    };
 
-    res.on('finish', () => {
-      cleanupFiles(tempFiles);
+    readStream.on('error', (streamErr) => {
+      console.error('Preview readStream error:', streamErr);
+      safeCleanup();
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Error al leer vista previa de audio' });
+      }
     });
-    res.on('close', () => {
-      cleanupFiles(tempFiles);
-    });
-    readStream.on('error', () => {
-      cleanupFiles(tempFiles);
-    });
+    res.on('finish', safeCleanup);
+    res.on('close', safeCleanup);
+    readStream.pipe(res);
   } catch (err: any) {
     cleanupFiles(tempFiles);
     console.error('Audio preview error:', err);
-    res.status(500).json({ error: err.message || 'Error generando vista previa de audio' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || 'Error generando vista previa de audio' });
+    }
   }
 });
 
@@ -1767,19 +1814,34 @@ app.post('/api/download-audio', upload.single('audioFile'), async (req, res) => 
     // Cleanup input temp files
     cleanupFiles(tempFiles);
 
+    const downloadUrl = `/api/download-file/${downloadId}/${encodeURIComponent(finalFileName)}`;
+
     // If client requested stream directly
     if (format === 'stream') {
+      const encodedName = encodeURIComponent(finalFileName);
       res.setHeader('Content-Type', 'audio/mpeg');
       res.setHeader('Content-Length', stat.size);
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(finalFileName)}"`);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`);
+      res.setHeader('X-File-Name', encodedName);
+      res.setHeader('X-File-Size', stat.size.toString());
+      res.setHeader('X-Download-Url', downloadUrl);
       res.setHeader('Cache-Control', 'no-cache');
       const readStream = fs.createReadStream(outputDownloadPath);
+      readStream.on('error', (err) => {
+        console.error('Download stream error:', err);
+        try { readStream.destroy(); } catch {}
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Error transmitiendo el archivo MP3' });
+        }
+      });
+      res.on('close', () => {
+        try { readStream.destroy(); } catch {}
+      });
       readStream.pipe(res);
       return;
     }
 
     // Default: return JSON with direct download URLs
-    const downloadUrl = `/api/download-file/${downloadId}/${encodeURIComponent(finalFileName)}`;
     res.json({
       success: true,
       downloadId,
@@ -1793,27 +1855,34 @@ app.post('/api/download-audio', upload.single('audioFile'), async (req, res) => 
   } catch (err: any) {
     cleanupFiles(tempFiles);
     console.error('Audio download error:', err);
-    res.status(500).json({ error: err.message || 'Error procesando la descarga de audio' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || 'Error procesando la descarga de audio' });
+    }
   }
 });
 
 // Direct file download handler by ID
 app.get('/api/download-file/:downloadId/:filename?', (req, res) => {
-  const { downloadId } = req.params;
-  const entry = downloadCache.get(downloadId);
+  const { downloadId, filename } = req.params;
+  const safeId = (downloadId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  let entry = downloadCache.get(safeId);
+
+  // Fallback to TEMP_DIR if cache map missed (e.g. server restarted)
+  if (!entry && safeId) {
+    const fallbackPath = path.join(TEMP_DIR, `${safeId}.mp3`);
+    if (fs.existsSync(fallbackPath)) {
+      entry = {
+        filePath: fallbackPath,
+        fileName: filename || 'audio_roblox_ready.mp3',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      };
+    }
+  }
 
   if (!entry || !fs.existsSync(entry.filePath)) {
-    return res.status(404).send(`
-      <!DOCTYPE html>
-      <html>
-        <head><title>Descarga no encontrada</title></head>
-        <body style="font-family: sans-serif; background: #0A0E17; color: #fff; text-align: center; padding: 50px;">
-          <h2>El archivo de audio ha expirado o no existe</h2>
-          <p>Por favor regresa a la aplicación y vuelve a presionar Descargar MP3.</p>
-          <a href="/" style="color: #38bdf8;">Volver a la aplicación</a>
-        </body>
-      </html>
-    `);
+    return res.status(404).json({
+      error: 'El archivo de audio ha expirado o no existe. Vuelve a presionar Descargar MP3.',
+    });
   }
 
   const stat = fs.statSync(entry.filePath);
@@ -1825,6 +1894,16 @@ app.get('/api/download-file/:downloadId/:filename?', (req, res) => {
   res.setHeader('Cache-Control', 'public, max-age=3600');
 
   const stream = fs.createReadStream(entry.filePath);
+  stream.on('error', (err) => {
+    console.error('Download-file stream error:', err);
+    try { stream.destroy(); } catch {}
+    if (!res.headersSent) {
+      res.status(500).end();
+    }
+  });
+  res.on('close', () => {
+    try { stream.destroy(); } catch {}
+  });
   stream.pipe(res);
 });
 
@@ -1883,14 +1962,22 @@ app.get('/api/download-direct', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`);
 
     const readStream = fs.createReadStream(outputDownloadPath);
+    let directCleaned = false;
+    const safeDirectCleanup = () => {
+      if (directCleaned) return;
+      directCleaned = true;
+      try { readStream.destroy(); } catch {}
+      cleanupFiles(tempFiles);
+    };
+    readStream.on('error', safeDirectCleanup);
+    res.on('finish', safeDirectCleanup);
+    res.on('close', safeDirectCleanup);
     readStream.pipe(res);
-
-    res.on('finish', () => cleanupFiles(tempFiles));
-    res.on('close', () => cleanupFiles(tempFiles));
-    readStream.on('error', () => cleanupFiles(tempFiles));
   } catch (err: any) {
     cleanupFiles(tempFiles);
-    res.status(500).send(`Error generando descarga: ${err.message}`);
+    if (!res.headersSent) {
+      res.status(500).send(`Error generando descarga: ${err.message}`);
+    }
   }
 });
 
